@@ -2,8 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <title>Nova Mother App</title>
+
+<!-- ---- PWA: installability, icons & theme ---- -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#161A26">
+<link rel="icon" type="image/png" href="https://i.postimg.cc/hvy7NPrV/20260729-202128.png">
+<link rel="shortcut icon" href="https://i.postimg.cc/hvy7NPrV/20260729-202128.png">
+<link rel="apple-touch-icon" href="https://i.postimg.cc/hvy7NPrV/20260729-202128.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Nova Mother App">
+
 <style>
   :root{
     /* Ink & neutrals */
@@ -134,9 +146,50 @@
   details summary{cursor:pointer;font-weight:700;color:var(--navy-2);font-size:13px;padding:4px 0;}
   pre{background:var(--navy);color:#D7DCEA;border:1px solid var(--line);border-radius:var(--radius-sm);padding:13px;font-size:11px;overflow-x:auto;white-space:pre-wrap;}
   hr.divider{border-top:1px solid var(--line);}
+
+  /* ---- Brand logo (circular everywhere) ---- */
+  .app-logo{border-radius:50%;object-fit:cover;display:block;flex-shrink:0;background:#fff;box-shadow:0 0 0 1px rgba(20,23,35,.06);}
+  .topbar-logo{width:30px;height:30px;margin-right:2px;}
+  .login-logo{width:64px;height:64px;margin:0 auto 14px;box-shadow:0 4px 16px -4px rgba(52,87,213,.35),0 0 0 1px rgba(20,23,35,.06);}
+
+  /* ---- Boot splash (shown while the app initializes) ---- */
+  #bootSplash{position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:linear-gradient(180deg,var(--navy),var(--navy-2));transition:opacity .35s ease;}
+  #bootSplash.is-hidden{opacity:0;pointer-events:none;}
+  .splash-logo-wrap{position:relative;width:96px;height:96px;display:flex;align-items:center;justify-content:center;}
+  .splash-logo-wrap::before{content:"";position:absolute;inset:-8px;border-radius:50%;border:3px solid rgba(255,255,255,.14);border-top-color:#fff;animation:splashSpin 1s linear infinite;}
+  .splash-logo{width:96px;height:96px;box-shadow:0 8px 30px -6px rgba(0,0,0,.45),0 0 0 1px rgba(255,255,255,.12);animation:splashPulse 1.8s ease-in-out infinite;}
+  .splash-brand{color:#fff;font-weight:800;font-size:16px;letter-spacing:-.01em;}
+  .splash-brand span{color:#7C93F0;}
+  .splash-sub{color:rgba(255,255,255,.55);font-size:12px;font-weight:600;letter-spacing:.02em;}
+  @keyframes splashSpin{to{transform:rotate(360deg);}}
+  @keyframes splashPulse{0%,100%{transform:scale(1);}50%{transform:scale(1.045);}}
+
+  /* ---- Full-screen install gate ---- */
+  #installGate{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,var(--navy),var(--navy-2));padding:24px;}
+  .gate-card{width:100%;max-width:380px;text-align:center;color:#fff;}
+  .gate-logo{width:104px;height:104px;margin:0 auto 20px;box-shadow:0 10px 34px -8px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.12);}
+  .gate-title{font-weight:800;font-size:21px;letter-spacing:-.01em;margin-bottom:6px;}
+  .gate-title span{color:#7C93F0;}
+  .gate-desc{color:rgba(255,255,255,.65);font-size:13.5px;line-height:1.55;margin-bottom:22px;}
+  .gate-btn{width:100%;border:none;border-radius:var(--radius-sm);padding:14px 16px;font-size:14.5px;font-weight:800;cursor:pointer;background:var(--accent);color:#fff;box-shadow:0 8px 20px -6px rgba(52,87,213,.55);transition:filter .15s ease;}
+  .gate-btn:hover{filter:brightness(1.08);}
+  .gate-btn:active{filter:brightness(.94);}
+  .gate-instructions{margin-top:18px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:var(--radius-sm);padding:14px 16px;text-align:left;color:rgba(255,255,255,.85);font-size:13px;line-height:1.7;}
+  .gate-instructions b{color:#fff;}
+  .gate-instructions ol{margin:6px 0 0;padding-left:18px;}
+  .gate-waiting{margin-top:16px;color:rgba(255,255,255,.5);font-size:12px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;}
+  .gate-success{margin-top:6px;background:rgba(28,154,108,.18);border:1px solid rgba(28,154,108,.4);border-radius:var(--radius-sm);padding:14px 16px;color:#BFF0DA;font-size:13.5px;line-height:1.6;}
 </style>
 </head>
 <body>
+<div id="bootSplash">
+  <div class="splash-logo-wrap"><img class="app-logo splash-logo" src="https://i.postimg.cc/hvy7NPrV/20260729-202128.png" alt="Nova Mother App"></div>
+  <div style="text-align:center;">
+    <div class="splash-brand">Nova <span>Mother App</span></div>
+    <div class="splash-sub" style="margin-top:4px;">Loading…</div>
+  </div>
+</div>
+<div id="installGate"></div>
 <div id="app"></div>
 <script>
 /* ============================================================
@@ -147,6 +200,105 @@
    ============================================================ */
 const SUPABASE_URL = "https://jdayvizeqwfnknfdeudy.supabase.co";
 const SUPABASE_KEY = "sb_publishable_NfJkiWiV3eGOTWrQrztTJA_xOeby6ae";
+
+/* ============================================================
+   PWA: INSTALL-ONLY GATE
+   The app only ever runs once it's been added/installed to the
+   device — opened straight in a browser tab, it shows a full-screen
+   "Install App" page with no way to skip past it. Once installed
+   (standalone / home-screen launch), this gate never appears again
+   until/unless the app is uninstalled.
+   ============================================================ */
+const APP_LOGO_URL = "https://i.postimg.cc/hvy7NPrV/20260729-202128.png";
+
+function isStandaloneDisplay() {
+  return window.matchMedia("(display-mode: standalone)").matches ||
+         window.matchMedia("(display-mode: window-controls-overlay)").matches ||
+         window.navigator.standalone === true; // iOS Safari's own flag
+}
+
+function detectPlatform() {
+  const ua = navigator.userAgent || "";
+  const isIOS = /iphone|ipad|ipod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isAndroid = /android/i.test(ua);
+  const isSafari = /^((?!chrome|android|crios|fxios).)*safari/i.test(ua);
+  return { isIOS, isAndroid, isSafari };
+}
+
+let deferredInstallPrompt = null;
+
+function installInstructionsHtml() {
+  const { isIOS, isAndroid, isSafari } = detectPlatform();
+  if (isIOS) {
+    return `<div class="gate-instructions"><b>Install on iPhone/iPad:</b>
+      <ol><li>Tap the <b>Share</b> icon in Safari's toolbar</li>
+      <li>Scroll down and tap <b>Add to Home Screen</b></li>
+      <li>Tap <b>Add</b>, then open Nova Mother App from your home screen</li></ol></div>`;
+  }
+  if (isAndroid) {
+    return `<div class="gate-instructions"><b>Install on Android:</b>
+      <ol><li>Tap the <b>⋮</b> menu in your browser</li>
+      <li>Tap <b>Install app</b> (or <b>Add to Home screen</b>)</li>
+      <li>Confirm, then open Nova Mother App from your home screen</li></ol></div>`;
+  }
+  return `<div class="gate-instructions"><b>Install on desktop:</b>
+    <ol><li>Click the install icon in your address bar (or the browser menu)</li>
+    <li>Choose <b>Install Nova Mother App</b></li>
+    <li>Launch it from your desktop/apps going forward</li></ol></div>`;
+}
+
+function renderInstallGate(justInstalled) {
+  const el = document.getElementById("installGate");
+  const bootSplash = document.getElementById("bootSplash");
+  if (bootSplash) bootSplash.classList.add("is-hidden");
+  document.getElementById("app").innerHTML = "";
+  el.style.display = "flex";
+
+  if (justInstalled) {
+    el.innerHTML = `<div class="gate-card">
+      <img class="app-logo gate-logo" src="${APP_LOGO_URL}" alt="Nova Mother App">
+      <div class="gate-title">Nova <span>Mother App</span></div>
+      <div class="gate-success">✓ Installed! Open Nova Mother App from your home screen or app list to continue.</div>
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = `<div class="gate-card">
+    <img class="app-logo gate-logo" src="${APP_LOGO_URL}" alt="Nova Mother App">
+    <div class="gate-title">Nova <span>Mother App</span></div>
+    <div class="gate-desc">This is an installable app. Install it to your device to continue — it only takes a moment.</div>
+    <button class="gate-btn" id="installNowBtn">Install App</button>
+    <div id="gateInstructionsSlot"></div>
+  </div>`;
+
+  document.getElementById("installNowBtn").onclick = async () => {
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      const { outcome } = await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt = null;
+      if (outcome !== "accepted") renderInstallGate(); // stays on the gate either way
+    } else {
+      document.getElementById("gateInstructionsSlot").innerHTML = installInstructionsHtml();
+    }
+  };
+}
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (!isStandaloneDisplay()) renderInstallGate();
+});
+
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+  renderInstallGate(true);
+});
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
 
 /* ---------------- ONE-TIME SETUP SQL ----------------
    Run this in Supabase → SQL Editor before using this app. It creates the
@@ -1148,7 +1300,7 @@ const ICONS = {
 function topBarHtml() {
   const initial = (motherAdmin?.full_name || motherAdmin?.username || "?").trim().charAt(0).toUpperCase();
   return `<div class="topbar">
-    <div class="brand">Nova <span>Mother App</span></div>
+    <div class="brand" style="display:flex;align-items:center;gap:8px;"><img class="app-logo topbar-logo" src="${APP_LOGO_URL}" alt="Nova Mother App">Nova <span>Mother App</span></div>
     <div class="acct-chip" id="acctChip" title="Account &amp; settings">
       <span class="acct-avatar">${initial}</span>
       <span class="acct-name">${motherAdmin?.full_name || motherAdmin?.username || ""}</span>
@@ -1194,6 +1346,7 @@ let authMode = "login"; // "login" or "create"
 function renderLogin() {
   app().innerHTML = `
     <div class="login-wrap"><div class="login-card">
+      <img class="app-logo login-logo" src="${APP_LOGO_URL}" alt="Nova Mother App">
       <div class="brand" style="text-align:center;margin-bottom:16px;">Nova <span>Mother App</span></div>
       <div id="loginMsg"></div>
       <div id="loginForm"></div>
@@ -2476,8 +2629,18 @@ document.addEventListener("focusin", (e) => {
 });
 
 (async () => {
+  // Not installed / not launched as an app → show the full-screen install
+  // gate only. No "continue in browser" escape hatch, per spec.
+  if (!isStandaloneDisplay()) {
+    renderInstallGate();
+    return;
+  }
+  // Installed & launched as an app → boot splash while the session restores,
+  // then hand off to the normal app render.
   await tryRestoreMotherSession();
   render();
+  const bootSplash = document.getElementById("bootSplash");
+  if (bootSplash) bootSplash.classList.add("is-hidden");
 })();
 </script>
 </body>
