@@ -1,0 +1,20 @@
+{
+  "name": "Nova Mother App",
+  "short_name": "Nova Mother",
+  "description": "Super-admin panel for managing every school on Nova School Manager.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "id": "./index.html",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#161A26",
+  "theme_color": "#161A26",
+  "launch_handler": {
+    "client_mode": ["navigate-existing", "auto"]
+  },
+  "icons": [
+    { "src": "https://i.postimg.cc/hvy7NPrV/20260729-202128.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "https://i.postimg.cc/hvy7NPrV/20260729-202128.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
