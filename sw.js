@@ -1,9 +1,10 @@
 /* Nova Mother App — service worker
-   Caches the app shell (this HTML page + manifest) so the installed app
-   opens instantly, while always going straight to the network for
-   Supabase/API calls so data is never served stale. */
+   Network-first for the app shell (HTML/manifest) so an installed app
+   always picks up the latest deploy when online, falling back to cache
+   only when offline. Supabase/API calls always go straight to network. */
 
-const CACHE_NAME = "nova-mother-app-v1";
+const CACHE_NAME = "nova-mother-app-v2"; // bump this string on every future deploy to bust old caches
+
 const APP_SHELL = ["./", "./index.html", "./manifest.json"];
 
 self.addEventListener("install", (event) => {
@@ -31,18 +32,17 @@ self.addEventListener("fetch", (event) => {
   // the logo CDN, etc.) is left completely untouched — straight to network.
   if (url.origin !== self.location.origin) return;
 
+  // Network-first: always try to get the freshest copy first. Only fall
+  // back to whatever's cached if the network request fails (offline).
   event.respondWith(
-    caches.match(req).then((cached) => {
-      const network = fetch(req)
-        .then((res) => {
-          if (res && res.status === 200) {
-            const clone = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    fetch(req)
+      .then((res) => {
+        if (res && res.status === 200) {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req))
   );
 });
