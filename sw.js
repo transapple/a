@@ -1,48 +1,45 @@
-/* Nova Mother App — service worker
-   Network-first for the app shell (HTML/manifest) so an installed app
-   always picks up the latest deploy when online, falling back to cache
-   only when offline. Supabase/API calls always go straight to network. */
+/* ---------------- Nova Mother App: service worker ----------------
+   IMPORTANT: if you already have a sw.js in this project (e.g. for PWA
+   offline caching), don't just overwrite it with this file — merge the
+   "push" and "notificationclick" listeners below into your existing one.
+   This version is intentionally minimal: no caching, just push support,
+   so it's safe to drop in if you don't have one yet. */
 
-const CACHE_NAME = "nova-mother-app-v2"; // bump this string on every future deploy to bust old caches
-
-const APP_SHELL = ["./", "./index.html", "./manifest.json"];
-
-self.addEventListener("install", (event) => {
+self.addEventListener("install", () => {
   self.skipWaiting();
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL).catch(() => {}))
-  );
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches
-      .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+  event.waitUntil(self.clients.claim());
 });
 
-self.addEventListener("fetch", (event) => {
-  const req = event.request;
-  if (req.method !== "GET") return;
+// Fired when the Edge Function sends a push. The service worker runs even
+// when the app/tab is fully closed, which is what makes this a real push
+// notification rather than an in-app banner.
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) {}
+  const title = data.title || "Nova Mother App";
+  const options = {
+    body: data.body || "",
+    icon: "https://i.postimg.cc/hvy7NPrV/20260729-202128.png",
+    badge: "https://i.postimg.cc/hvy7NPrV/20260729-202128.png",
+    data: { url: data.url || "/" },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
 
-  const url = new URL(req.url);
-  // Only manage same-origin app-shell requests. Everything else (Supabase,
-  // the logo CDN, etc.) is left completely untouched — straight to network.
-  if (url.origin !== self.location.origin) return;
-
-  // Network-first: always try to get the freshest copy first. Only fall
-  // back to whatever's cached if the network request fails (offline).
-  event.respondWith(
-    fetch(req)
-      .then((res) => {
-        if (res && res.status === 200) {
-          const clone = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
-        }
-        return res;
-      })
-      .catch(() => caches.match(req))
+// Tapping the notification focuses an already-open tab if there is one,
+// otherwise opens a new one.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || "/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ("focus" in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
+    })
   );
 });

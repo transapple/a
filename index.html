@@ -201,6 +201,17 @@
 const SUPABASE_URL = "https://jdayvizeqwfnknfdeudy.supabase.co";
 const SUPABASE_KEY = "sb_publishable_NfJkiWiV3eGOTWrQrztTJA_xOeby6ae";
 
+/* ---------------- RISK & RETENTION: PUSH ALERTS ----------------
+   VAPID_PUBLIC_KEY is safe to ship in client code (that's how Web Push
+   works — it's the public half of a key pair). The matching private key
+   is a secret and only ever lives in the Edge Function's environment, never
+   here. See the Risk & Retention tab for full setup instructions and the
+   matching private key to use there.
+   Generated once for this app — reuse it, don't regenerate, or existing
+   subscriptions will silently stop receiving pushes. */
+const VAPID_PUBLIC_KEY = "BN1vsx9nDlrhKcKHTHtTSFfj7Dpwbyc45d3JJwB0clU2NkP8RBkn95axxN4ETd9_47haCWHoebERdaU2oIFAf6I";
+const RISK_CHECK_FUNCTION_URL = `${SUPABASE_URL}/functions/v1/risk-alerts-check`;
+
 /* ============================================================
    PWA: INSTALL-ONLY GATE
    The app only ever runs once it's been added/installed to the
@@ -943,6 +954,184 @@ end;
 $$;
 grant execute on function delete_school_completely(text,text,uuid) to anon, authenticated;`;
 
+/* ---------------- RISK & RETENTION UPGRADE (run once, after MOTHER_OPS_SQL) ----------------
+   Adds: a per-school engagement view (last login, active users — used to flag
+   schools going quiet before they churn), a push-subscription table (so this
+   device can receive real push notifications, even closed), and a dedupe
+   table so the same alert never gets pushed twice. This SQL only prepares the
+   data — actually sending pushes needs the separate Edge Function described
+   in the Risk & Retention tab. Safe to re-run. */
+const RISK_ALERTS_SQL = `-- Per-school engagement: last login across all of a school's users, and how
+-- many distinct users logged in during the last 7 days. Powers the "going
+-- quiet" list — nothing here pushes anything, it's just a read-only view.
+create or replace view school_engagement as
+select
+  s.id as school_id,
+  s.name,
+  s.status,
+  s.subscription_expires_at,
+  max(p.last_login_at) as last_login_at,
+  count(*) filter (where p.last_login_at >= now() - interval '7 days') as active_users_7d,
+  count(*) filter (where p.deleted_at is null) as total_users
+from schools s
+left join profiles p on p.school_id = s.id and p.deleted_at is null
+group by s.id, s.name, s.status, s.subscription_expires_at;
+grant select on school_engagement to anon, authenticated;
+
+-- One row per browser/device subscribed to push alerts from this app.
+create table if not exists push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  endpoint text unique not null,
+  p256dh text not null,
+  auth text not null,
+  created_at timestamptz not null default now()
+);
+alter table push_subscriptions enable row level security;
+drop policy if exists "Mother app can manage push subscriptions" on push_subscriptions;
+create policy "Mother app can manage push subscriptions" on push_subscriptions for all using (true) with check (true);
+
+-- Records which alerts have already been sent so the scheduled checker never
+-- pushes the same thing twice (e.g. the same school's expiry, the same
+-- inactivity window). alert_key is something like 'expired:<school_id>' or
+-- 'inactive30:<school_id>:2026-07-30' — unique, so a repeat insert fails and
+-- the Edge Function knows to skip sending.
+create table if not exists sent_alerts (
+  id uuid primary key default gen_random_uuid(),
+  alert_key text unique not null,
+  created_at timestamptz not null default now()
+);
+alter table sent_alerts enable row level security;
+drop policy if exists "Mother app can manage sent alerts" on sent_alerts;
+create policy "Mother app can manage sent alerts" on sent_alerts for all using (true) with check (true);`;
+
+const RISK_ALERTS_FUNCTION_CODE = `// supabase/functions/risk-alerts-check/index.ts
+//
+// Scheduled Edge Function: checks a few "needs attention" conditions and
+// sends a real Web Push notification (works even with the app fully closed)
+// to every device subscribed via the Risk & Retention tab. Safe to call
+// manually or on a Cron schedule (Edge Functions -> risk-alerts-check -> Cron).
+//
+// Required secrets (Edge Functions -> risk-alerts-check -> Secrets):
+//   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VAPID_PUBLIC_KEY,
+//   VAPID_PRIVATE_KEY, VAPID_SUBJECT (e.g. "mailto:you@yourdomain.com")
+//
+// This function talks to Postgres with the SERVICE ROLE key (bypasses RLS)
+// since it runs unattended with no logged-in admin. Never put the service
+// role key in the client app itself.
+
+import { createClient } from "npm:@supabase/supabase-js@2";
+import webpush from "npm:web-push@3.6.7";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const VAPID_PUBLIC_KEY = Deno.env.get("VAPID_PUBLIC_KEY")!;
+const VAPID_PRIVATE_KEY = Deno.env.get("VAPID_PRIVATE_KEY")!;
+const VAPID_SUBJECT = Deno.env.get("VAPID_SUBJECT")!;
+
+webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+
+// Tries to claim an alert key. Returns true (send it) the first time this
+// key is seen, false (skip — already sent) every time after, until the key
+// itself changes (e.g. a new day/week/hour bucket rolls around).
+async function claim(alertKey: string): Promise<boolean> {
+  const { error } = await supabase.from("sent_alerts").insert({ alert_key: alertKey });
+  return !error; // a unique-violation error means it was already claimed
+}
+
+async function sendToAllSubscriptions(payload: Record<string, unknown>) {
+  const { data: subs, error } = await supabase.from("push_subscriptions").select("*");
+  if (error || !subs) return 0;
+  const body = JSON.stringify(payload);
+  let sent = 0;
+  for (const sub of subs) {
+    const pushSubscription = {
+      endpoint: sub.endpoint,
+      keys: { p256dh: sub.p256dh, auth: sub.auth },
+    };
+    try {
+      await webpush.sendNotification(pushSubscription, body);
+      sent++;
+    } catch (err: any) {
+      // 404/410 = the browser/OS discarded this subscription; stop trying it.
+      if (err && (err.statusCode === 404 || err.statusCode === 410)) {
+        await supabase.from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
+      }
+    }
+  }
+  return sent;
+}
+
+Deno.serve(async (_req) => {
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const isoWeek = now.getUTCFullYear() + "-w" + Math.ceil(now.getUTCDate() / 7);
+  const hourBucket = now.toISOString().slice(0, 13);
+
+  let alertsSent = 0;
+
+  // --- 1) Payment overdue: active school past subscription_expires_at.
+  // Re-notified weekly while it stays overdue, not on every run.
+  const { data: engagement } = await supabase
+    .from("school_engagement")
+    .select("*")
+    .eq("status", "active");
+
+  for (const s of engagement || []) {
+    if (s.subscription_expires_at && s.subscription_expires_at < today) {
+      const key = "payment:" + s.school_id + ":" + isoWeek;
+      if (await claim(key)) {
+        alertsSent += await sendToAllSubscriptions({
+          title: "Subscription overdue",
+          body: s.name + "'s subscription expired on " + s.subscription_expires_at + ".",
+          url: "/",
+        });
+      }
+    }
+
+    // --- 2) Going quiet: no logins from anyone at this school in 30+ days.
+    // Re-notified monthly while it stays true.
+    if (s.last_login_at) {
+      const daysSince = Math.floor((now.getTime() - new Date(s.last_login_at).getTime()) / 86400000);
+      if (daysSince >= 30) {
+        const monthBucket = today.slice(0, 7);
+        const key = "inactive30:" + s.school_id + ":" + monthBucket;
+        if (await claim(key)) {
+          alertsSent += await sendToAllSubscriptions({
+            title: "School going quiet",
+            body: s.name + " hasn't had a login in " + daysSince + " days.",
+            url: "/",
+          });
+        }
+      }
+    }
+  }
+
+  // --- 3) Error spike: 15+ platform errors in the last hour.
+  // Re-notified at most once per hour bucket.
+  const since = new Date(now.getTime() - 60 * 60000).toISOString();
+  const { count } = await supabase
+    .from("platform_error_log")
+    .select("id", { count: "exact", head: true })
+    .gte("created_at", since);
+
+  if ((count || 0) >= 15) {
+    const key = "error_spike:" + hourBucket;
+    if (await claim(key)) {
+      alertsSent += await sendToAllSubscriptions({
+        title: "Error spike detected",
+        body: (count || 0) + " errors reported in the last hour.",
+        url: "/",
+      });
+    }
+  }
+
+  return new Response(JSON.stringify({ checked_at: now.toISOString(), alerts_sent: alertsSent }), {
+    headers: { "Content-Type": "application/json" },
+  });
+});
+`;
+
 async function sb(path, opts = {}) {
   const headers = Object.assign({
     "apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY, "Content-Type": "application/json",
@@ -959,7 +1148,7 @@ const qs = (o) => Object.entries(o).filter(([,v])=>v!=null && v!=="").map(([k,v]
 
 const REMEMBER_KEY = "novaMotherUsername";
 let motherAdmin = null;
-let view = "dashboard"; // "dashboard", "analytics", "monitoring", "comms", "updates", "settings", or "schoolDetail"
+let view = "dashboard"; // "dashboard", "analytics", "risk", "monitoring", "comms", "updates", "settings", or "schoolDetail"
 let currentSchoolId = null;
 let schoolSubTab = "subscription"; // "subscription", "features", "admins", "danger"
 let schoolDangerNotice = null; // one-shot message shown when redirected into the Danger Zone tab
@@ -967,6 +1156,8 @@ let settingsSubTab = "account"; // "account", "admins", "database"
 const LOG_PAGE_SIZE = 10; // default number of rows shown before "Show all"
 let auditLogItems = [];
 let auditLogShowAll = false;
+let selectedSchoolIds = new Set(); // dashboard bulk-select state
+let pendingAnnounceTargets = null; // school ids handed off from Dashboard bulk action to the Comms composer
 let loginActivityItems = [];
 let loginActivityShowAll = false;
 const SCHOOL_TABS = [["subscription","Subscription","subscription"],["features","Features & Modules","features"],["admins","Administrators","admins"],["danger","Danger Zone","danger",true]];
@@ -1042,6 +1233,13 @@ async function logAudit(action, targetType, targetId, details) {
       details: details || null,
     }) });
   } catch(e) { /* logging failure shouldn't block the actual action */ }
+}
+async function countChurnedSchools(days) {
+  const since = new Date(Date.now() - days*86400000).toISOString();
+  const rows = await sb(`/rest/v1/audit_log?${qs({select:"target_id,details", action:"eq.set_school_status", created_at:`gte.${since}`})}`);
+  const churned = new Set();
+  rows.forEach(r => { if (r.details && /status=(suspended|deactivated)/.test(r.details)) churned.add(r.target_id); });
+  return churned.size;
 }
 async function listAuditLog(limit) {
   return sb(`/rest/v1/audit_log?${qs({select:"*", order:"created_at.desc", limit: limit || 50})}`);
@@ -1121,6 +1319,41 @@ async function deleteSchoolCompletely(schoolId, password) {
     p_actor_username: motherAdmin.username, p_actor_password: password, p_school_id: schoolId,
   }) });
 }
+async function bulkSetSchoolStatus(ids, status) {
+  assertFullAccess();
+  for (const id of ids) { await setSchoolStatus(id, status); }
+}
+function toCSV(rows, columns) {
+  const esc = (v) => {
+    const s = v == null ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  };
+  const header = columns.map(c => esc(c.label)).join(",");
+  const body = rows.map(r => columns.map(c => esc(c.get(r))).join(",")).join("\n");
+  return header + "\n" + body;
+}
+function downloadCSV(filename, csvText) {
+  const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function exportSchoolsCSV(schools) {
+  const csv = toCSV(schools, [
+    { label:"Name", get:s=>s.name },
+    { label:"Status", get:s=>s.status },
+    { label:"Plan", get:s=>s.plan||"" },
+    { label:"Billing cycle", get:s=>s.billing_cycle||"" },
+    { label:"Subscription amount", get:s=>s.subscription_amount??"" },
+    { label:"Expires on", get:s=>s.subscription_expires_at||"" },
+    { label:"Location", get:s=>s.location||"" },
+    { label:"Registered", get:s=>s.created_at ? new Date(s.created_at).toLocaleDateString() : "" },
+  ]);
+  downloadCSV(`nova-schools-${new Date().toISOString().slice(0,10)}.csv`, csv);
+}
+
 async function getSchool(id) {
   const rows = await sb(`/rest/v1/schools?${qs({id:`eq.${id}`, select:"*"})}`);
   return rows[0] || null;
@@ -1272,6 +1505,71 @@ async function listErrorLog() {
   return sb(`/rest/v1/platform_error_log?${qs({select:"*,schools(name)", order:"created_at.desc", limit:20})}`);
 }
 
+/* ---------------- RISK & RETENTION ----------------
+   Per-school engagement (for the "going quiet" list) and real Web Push
+   subscribe/unsubscribe for this device. The scheduled server-side check
+   that actually *sends* pushes lives outside this file — see the Edge
+   Function code and setup steps surfaced in the Risk & Retention tab. */
+async function listSchoolEngagement() {
+  return sb(`/rest/v1/school_engagement?${qs({select:"*", order:"last_login_at.asc.nullsfirst"})}`);
+}
+function daysSince(dateStr) {
+  if (!dateStr) return null;
+  return Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
+}
+async function countRecentErrors(minutes) {
+  const since = new Date(Date.now() - minutes*60000).toISOString();
+  return countRows("platform_error_log", { created_at:`gte.${since}` });
+}
+
+// Converts the VAPID public key (base64url, no padding) into the Uint8Array
+// the PushManager API expects.
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+async function getExistingPushSubscription() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+async function subscribeToPush() {
+  const reg = await navigator.serviceWorker.ready;
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") throw new Error("Notification permission was not granted.");
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+  });
+  const json = sub.toJSON();
+  await sb(`/rest/v1/push_subscriptions`, { method:"POST", headers:{ "Prefer":"resolution=merge-duplicates" }, body: JSON.stringify({
+    endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth,
+  }) });
+  return sub;
+}
+async function unsubscribeFromPush() {
+  const sub = await getExistingPushSubscription();
+  if (!sub) return;
+  const endpoint = sub.endpoint;
+  await sub.unsubscribe();
+  try { await sb(`/rest/v1/push_subscriptions?endpoint=eq.${encodeURIComponent(endpoint)}`, { method:"DELETE" }); } catch(e) {}
+}
+// Manually invokes the Edge Function that checks conditions and sends
+// pushes, instead of waiting for its schedule — used by the "Check now"
+// button so an admin can confirm everything's wired up correctly.
+async function runRiskCheckNow() {
+  const res = await fetch(RISK_CHECK_FUNCTION_URL, {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + SUPABASE_KEY, "apikey": SUPABASE_KEY, "Content-Type": "application/json" },
+  });
+  let data = null;
+  try { data = await res.json(); } catch(e) {}
+  if (!res.ok) throw new Error((data && data.error) || `Check failed (${res.status}). Has the Edge Function been deployed?`);
+  return data;
+}
+
 /* ---------------- ICONS ----------------
    Small hand-drawn line icons (stroked via .icon svg in CSS) used across the
    primary workspace nav and every sub-tab rail, so every screen in the app
@@ -1290,6 +1588,7 @@ const ICONS = {
   danger:       `<svg viewBox="0 0 24 24"><path d="M12 3 2 20h20L12 3z"/><path d="M12 9v5M12 17h.01"/></svg>`,
   account:      `<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>`,
   database:     `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>`,
+  risk:         `<svg viewBox="0 0 24 24"><path d="M12 2 2 21h20L12 2z"/><path d="M12 9v6M12 18h.01"/></svg>`,
 };
 
 /* ---------------- SHARED CHROME ----------------
@@ -1314,6 +1613,7 @@ function wireTopBar() {
 function navTabs(active) {
   const tabs = [
     ["dashboard","Schools","schools"],["analytics","Analytics","analytics"],
+    ["risk","Risk","risk"],
     ["monitoring","Monitoring","monitoring"],["comms","Comms","comms"],
     ["updates","Updates","updates"],["security","Security","security"],
     ["settings","Settings","settings"],
@@ -1374,6 +1674,10 @@ function renderLogin() {
       <details style="margin-top:10px;"><summary>Upgrade: permanently clear/delete a school's data</summary>
         <p class="tiny-note">Run this once too (needs the admin-roles script above already run) to unlock the Danger Zone on each school's page — clear all of a school's data, or delete the school and its data completely. Safe to re-run.</p>
         <pre>${SCHOOL_DANGER_ZONE_SQL}</pre>
+      </details>
+      <details style="margin-top:10px;"><summary>Upgrade: Risk &amp; Retention (engagement metrics + push alerts)</summary>
+        <p class="tiny-note">Run this once too to unlock the Risk &amp; Retention tab — per-school engagement metrics and (with a bit more setup shown in that tab) real push alerts. Safe to re-run.</p>
+        <pre>${RISK_ALERTS_SQL}</pre>
       </details>
     </div></div>`;
   const formDiv = document.getElementById("loginForm");
@@ -1446,12 +1750,22 @@ async function renderDashboard() {
         <div id="pendingList"></div>
       </div>
       <div class="card">
-        <div class="section-title">Schools</div>
+        <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div class="section-title" style="margin:0;">Schools</div>
+          <button class="btn btn-sm" id="exportCsvBtn" style="background:var(--panel-2);">Export CSV</button>
+        </div>
+        <div id="bulkBar" style="display:none;margin:10px 0;padding:10px;border-radius:10px;background:var(--panel-2);" class="row">
+          <span id="bulkCount" class="tiny-note" style="margin-right:auto;"></span>
+          <button class="btn btn-sm" id="bulkMessageBtn">Message selected</button>
+          <button class="btn btn-sm" id="bulkActivateBtn">Activate</button>
+          <button class="btn btn-sm btn-danger" id="bulkSuspendBtn">Suspend</button>
+        </div>
         <div id="schoolList">Loading…</div>
       </div>
     </div>`;
   wireTopBar();
   wireNavTabs();
+  selectedSchoolIds.clear();
   document.getElementById("createSchoolBtn").onclick = async () => {
     const name = document.getElementById("newSchoolName").value.trim();
     const msg = document.getElementById("createMsg"); msg.innerHTML = "";
@@ -1466,12 +1780,23 @@ async function renderDashboard() {
   loadSchools();
 }
 
+function updateBulkBar() {
+  const bar = document.getElementById("bulkBar");
+  const count = document.getElementById("bulkCount");
+  if (!bar || !count) return;
+  if (selectedSchoolIds.size === 0) { bar.style.display = "none"; return; }
+  bar.style.display = "flex";
+  count.textContent = `${selectedSchoolIds.size} selected`;
+}
+
 async function loadSchools() {
   const listEl = document.getElementById("schoolList");
   const pendingCard = document.getElementById("pendingCard");
   const pendingList = document.getElementById("pendingList");
+  const exportBtn = document.getElementById("exportCsvBtn");
   try {
     const schools = await listSchools();
+    if (exportBtn) exportBtn.onclick = () => exportSchoolsCSV(schools);
     if (!schools.length) { listEl.innerHTML = `<div class="tiny-note">No schools registered yet.</div>`; if (pendingCard) pendingCard.style.display = "none"; return; }
 
     const pending = schools.filter(s => s.status === "pending");
@@ -1504,8 +1829,13 @@ async function loadSchools() {
 
     const rest = schools.filter(s => s.status !== "pending");
     if (!rest.length) { listEl.innerHTML = `<div class="tiny-note">No approved schools yet.</div>`; return; }
+    const restIds = new Set(rest.map(s => s.id));
+    Array.from(selectedSchoolIds).forEach(id => { if (!restIds.has(id)) selectedSchoolIds.delete(id); });
     listEl.innerHTML = rest.map(s => `
       <div class="school-row clickable" data-open="${s.id}">
+        <label style="display:flex;align-items:center;margin-right:2px;" onclick="event.stopPropagation();">
+          <input type="checkbox" class="schoolSelect" data-id="${s.id}" ${selectedSchoolIds.has(s.id)?'checked':''} style="width:16px;height:16px;" />
+        </label>
         <div>
           <div class="school-name">${s.name}</div>
           <div class="tiny-note">${[s.motto, s.location, s.size_range].filter(Boolean).join(" · ") || new Date(s.created_at).toLocaleDateString()}</div>
@@ -1518,6 +1848,34 @@ async function loadSchools() {
     listEl.querySelectorAll("[data-open]").forEach(row => {
       row.onclick = () => { currentSchoolId = row.dataset.open; schoolSubTab = "subscription"; view = "schoolDetail"; render(); };
     });
+    listEl.querySelectorAll(".schoolSelect").forEach(cb => {
+      cb.onclick = (e) => e.stopPropagation();
+      cb.onchange = () => {
+        if (cb.checked) selectedSchoolIds.add(cb.dataset.id); else selectedSchoolIds.delete(cb.dataset.id);
+        updateBulkBar();
+      };
+    });
+    updateBulkBar();
+
+    const msgBtn = document.getElementById("bulkMessageBtn");
+    const activateBtn = document.getElementById("bulkActivateBtn");
+    const suspendBtn = document.getElementById("bulkSuspendBtn");
+    if (msgBtn) msgBtn.onclick = () => {
+      pendingAnnounceTargets = Array.from(selectedSchoolIds);
+      view = "comms"; render();
+    };
+    if (activateBtn) activateBtn.onclick = async () => {
+      if (!isFullAccess()) return;
+      if (!confirm(`Activate ${selectedSchoolIds.size} selected school(s)?`)) return;
+      await bulkSetSchoolStatus(Array.from(selectedSchoolIds), "active");
+      selectedSchoolIds.clear(); loadSchools();
+    };
+    if (suspendBtn) suspendBtn.onclick = async () => {
+      if (!isFullAccess()) return;
+      if (!confirm(`Suspend ${selectedSchoolIds.size} selected school(s)? They'll lose access until reactivated.`)) return;
+      await bulkSetSchoolStatus(Array.from(selectedSchoolIds), "suspended");
+      selectedSchoolIds.clear(); loadSchools();
+    };
   } catch(e) {
     listEl.innerHTML = `<div class="err">${e.message}</div>`;
   }
@@ -1665,6 +2023,10 @@ function renderSettingsDatabaseTab() {
       <details style="margin-top:8px;"><summary>Upgrade: permanently clear/delete a school's data</summary>
         <p class="tiny-note">If the Danger Zone on a school's page errors out, run this once in Supabase → SQL Editor.</p>
         <pre>${SCHOOL_DANGER_ZONE_SQL}</pre>
+      </details>
+      <details style="margin-top:8px;"><summary>Upgrade: Risk &amp; Retention (engagement metrics + push alerts)</summary>
+        <p class="tiny-note">If the Risk &amp; Retention tab errors out, run this once in Supabase → SQL Editor. Full push-alert setup (Edge Function + Cron) is shown directly in that tab.</p>
+        <pre>${RISK_ALERTS_SQL}</pre>
       </details>
     </div>`;
 }
@@ -2111,12 +2473,14 @@ async function renderAnalytics() {
       ${navTabs("analytics")}
       <div class="card" id="statsCard"><div class="tiny-note">Loading…</div></div>
       <div class="card" id="revenueCard"><div class="tiny-note">Loading…</div></div>
+      <div class="card" id="overdueCard"><div class="tiny-note">Loading…</div></div>
     </div>`;
   wireTopBar();
   wireNavTabs();
 
   const statsCard = document.getElementById("statsCard");
   const revenueCard = document.getElementById("revenueCard");
+  const overdueCard = document.getElementById("overdueCard");
   try {
     const [schools, students, teachers, parents, activeUsers, activeWeek] = await Promise.all([
       listSchools(),
@@ -2147,28 +2511,202 @@ async function renderAnalytics() {
       </div>`;
   } catch(e) { statsCard.innerHTML = `<div class="err">${e.message}</div>`; }
 
+  let activeSchoolsForOverdue = [];
   try {
-    const [totalRevenue, activeSchools] = await Promise.all([
+    const [totalRevenue, activeSchools, churned30] = await Promise.all([
       sumColumn("school_payments", "amount"),
       sb(`/rest/v1/schools?${qs({status:"eq.active", select:"plan,billing_cycle,subscription_amount"})}`),
+      countChurnedSchools(30).catch(() => null),
     ]);
+    activeSchoolsForOverdue = activeSchools;
     const monthlyFactor = { monthly:1, termly:1/4, yearly:1/12 };
     const mrr = activeSchools.reduce((acc, s) => acc + (Number(s.subscription_amount)||0) * (monthlyFactor[s.billing_cycle] ?? 0), 0);
-    const byPlan = {};
-    activeSchools.forEach(s => { const p = s.plan || "No plan set"; byPlan[p] = (byPlan[p]||0) + 1; });
+    const byPlanCount = {};
+    const byPlanRevenue = {};
+    activeSchools.forEach(s => {
+      const p = s.plan || "No plan set";
+      byPlanCount[p] = (byPlanCount[p]||0) + 1;
+      byPlanRevenue[p] = (byPlanRevenue[p]||0) + (Number(s.subscription_amount)||0) * (monthlyFactor[s.billing_cycle] ?? 0);
+    });
+    const churnRate = (churned30 != null && activeSchools.length) ? ((churned30 / (activeSchools.length + churned30)) * 100).toFixed(1) : null;
     revenueCard.innerHTML = `
       <div class="section-title">Revenue &amp; subscriptions</div>
       <div class="grid2">
         <div><div style="font-size:22px;font-weight:800;">${totalRevenue.toLocaleString()}</div><div class="subtle">Total revenue collected</div></div>
         <div><div style="font-size:22px;font-weight:800;">~${Math.round(mrr).toLocaleString()}</div><div class="subtle">Estimated monthly recurring revenue</div></div>
+        <div><div style="font-size:22px;font-weight:800;">${churnRate != null ? churnRate + '%' : '—'}</div><div class="subtle">Churn rate (last 30 days)</div></div>
+        <div><div style="font-size:22px;font-weight:800;">${churned30 != null ? churned30 : '—'}</div><div class="subtle">Schools suspended/deactivated, last 30 days</div></div>
       </div>
-      <div class="tiny-note" style="margin-top:8px;">MRR is an estimate: termly plans ÷4, yearly plans ÷12, based on active schools' current subscription amount.</div>
+      <div class="tiny-note" style="margin-top:8px;">MRR is an estimate: termly plans ÷4, yearly plans ÷12, based on active schools' current subscription amount. Churn is based on status-change entries in the audit log.</div>
       <hr class="divider" />
-      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">Active schools by plan</div>
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">Monthly revenue by plan</div>
       <div class="row" style="flex-wrap:wrap;gap:6px;">
-        ${Object.entries(byPlan).map(([p,n]) => `<span class="badge badge-deactivated">${p}: ${n}</span>`).join("") || `<span class="subtle">No active schools yet.</span>`}
+        ${Object.entries(byPlanRevenue).map(([p,amt]) => `<span class="badge badge-deactivated">${p}: ~${Math.round(amt).toLocaleString()}/mo (${byPlanCount[p]} school${byPlanCount[p]===1?'':'s'})</span>`).join("") || `<span class="subtle">No active schools yet.</span>`}
       </div>`;
   } catch(e) { revenueCard.innerHTML = `<div class="err">${e.message}</div>`; }
+
+  try {
+    const overdue = activeSchoolsForOverdue.length
+      ? await sb(`/rest/v1/schools?${qs({status:"eq.active", select:"id,name,subscription_amount,subscription_expires_at", subscription_expires_at:`lt.${new Date().toISOString().slice(0,10)}`, order:"subscription_expires_at.asc"})}`)
+      : [];
+    overdueCard.innerHTML = `
+      <div class="section-title">Overdue accounts</div>
+      ${overdue.length ? `
+        <div class="tiny-note" style="margin-bottom:8px;">${overdue.length} active school${overdue.length===1?'':'s'} past their subscription expiry date.</div>
+        ${overdue.map(s => `
+          <div class="school-row" data-overdue-id="${s.id}">
+            <div>
+              <div class="school-name">${s.name}</div>
+              <div class="tiny-note">Expired ${Math.abs(daysUntil(s.subscription_expires_at))}d ago${s.subscription_amount ? ` · ${Number(s.subscription_amount).toLocaleString()} owed` : ""}</div>
+            </div>
+            <div class="row" style="flex-wrap:wrap;gap:6px;justify-content:flex-end;">
+              ${isFullAccess() ? `<button class="btn btn-sm" data-remind="${s.id}" data-name="${s.name}">Send reminder</button>` : ""}
+              ${isFullAccess() ? `<button class="btn btn-sm btn-danger" data-suspend-overdue="${s.id}">Suspend</button>` : ""}
+            </div>
+          </div>`).join("")}
+      ` : `<div class="tiny-note">No overdue accounts right now.</div>`}`;
+    overdueCard.querySelectorAll("[data-remind]").forEach(btn => {
+      btn.onclick = async () => {
+        btn.disabled = true; btn.textContent = "Sending…";
+        try {
+          await sendAnnouncement({ title:"Subscription overdue", body:"Your subscription has expired — please renew to avoid a service interruption.", targetAll:false, targetSchoolIds:[btn.dataset.remind] });
+          btn.textContent = "Reminder sent";
+        } catch(e) { btn.disabled = false; btn.textContent = "Send reminder"; alert(e.message); }
+      };
+    });
+    overdueCard.querySelectorAll("[data-suspend-overdue]").forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm("Suspend this school for non-payment?")) return;
+        try { await setSchoolStatus(btn.dataset.suspendOverdue, "suspended"); renderAnalytics(); }
+        catch(e) { alert(e.message); }
+      };
+    });
+  } catch(e) { overdueCard.innerHTML = `<div class="err">${e.message}</div>`; }
+}
+
+async function renderRisk() {
+  app().innerHTML = `
+    <div class="wrap">
+      ${topBarHtml()}
+      ${navTabs("risk")}
+      <div class="card" id="pushCard"><div class="tiny-note">Checking push status…</div></div>
+      <div class="card" id="alertsCard"><div class="tiny-note">Loading…</div></div>
+      <div class="card" id="engagementCard"><div class="tiny-note">Loading…</div></div>
+      <div class="card">
+        <div class="section-title">Server-side setup</div>
+        <div class="tiny-note" style="margin-bottom:8px;">This tab shows everything live whenever you open the app. For real push notifications — ones that arrive even with the app fully closed — a small Edge Function has to run on a schedule outside this file. It's a one-time setup.</div>
+        <details><summary>Step 1 — database (view, subscriptions, dedupe table)</summary>
+          <p class="tiny-note">Run this once in Supabase → SQL Editor.</p>
+          <pre>${RISK_ALERTS_SQL}</pre>
+        </details>
+        <details style="margin-top:8px;"><summary>Step 2 — the Edge Function that checks &amp; sends pushes</summary>
+          <p class="tiny-note">In your Supabase project: Edge Functions → Create a new function named exactly <code>risk-alerts-check</code>, paste this in, then deploy it (via the dashboard's inline editor, or <code>supabase functions deploy risk-alerts-check</code> with the CLI).</p>
+          <pre>${RISK_ALERTS_FUNCTION_CODE}</pre>
+        </details>
+        <details style="margin-top:8px;"><summary>Step 3 — secrets the function needs</summary>
+          <p class="tiny-note">In Edge Functions → risk-alerts-check → Secrets, add these four. <code>VAPID_PUBLIC_KEY</code> must match the one already baked into this app — don't regenerate it.</p>
+          <pre>SUPABASE_URL = ${SUPABASE_URL}
+SUPABASE_SERVICE_ROLE_KEY = (Project Settings → API → service_role key — keep this secret, never put it in this HTML file)
+VAPID_PUBLIC_KEY = ${VAPID_PUBLIC_KEY}
+VAPID_PRIVATE_KEY = 2S7jFJrw4Mwds7ly-US5K17DTjDBKtgOw4l_PTG0uYA
+VAPID_SUBJECT = mailto:you@yourdomain.com   (any contact address — required by the push spec)</pre>
+          <p class="tiny-note" style="margin-top:6px;">⚠️ The private key above is a real, working key generated for this app — but it's printed here in plain text, so anyone who can read this HTML can read it too. Treat it as already-compromised: paste it into the Edge Function secret now, then generate your own replacement pair (e.g. <code>npx web-push generate-vapid-keys</code>) and update both the secret and <code>VAPID_PUBLIC_KEY</code> in this file's constants the moment you can.</p>
+        </details>
+        <details style="margin-top:8px;"><summary>Step 4 — run it on a schedule</summary>
+          <p class="tiny-note">In Edge Functions → risk-alerts-check → Cron, add a schedule (e.g. every 30–60 minutes: <code>*/30 * * * *</code>). That's it — from then on it checks conditions and pushes automatically, even with this app closed.</p>
+        </details>
+      </div>
+    </div>`;
+  wireTopBar();
+  wireNavTabs();
+
+  const pushCard = document.getElementById("pushCard");
+  async function renderPushCard() {
+    let sub = null;
+    let supported = "serviceWorker" in navigator && "PushManager" in window;
+    try { sub = supported ? await getExistingPushSubscription() : null; } catch(e) {}
+    pushCard.innerHTML = `
+      <div class="section-title">Push alerts to this device</div>
+      ${!supported ? `<div class="tiny-note">This browser doesn't support push notifications.</div>` : `
+        <div class="row" style="justify-content:space-between;">
+          <span class="badge ${sub ? 'badge-active' : 'badge-deactivated'}">${sub ? 'Subscribed' : 'Not subscribed'}</span>
+          <button class="btn btn-sm ${sub ? 'btn-ghost' : 'btn-primary'}" id="pushToggleBtn">${sub ? 'Unsubscribe' : 'Enable push alerts'}</button>
+        </div>
+        <div class="tiny-note" style="margin-top:8px;">When enabled, this device gets a push notification whenever the scheduled check (set up below) finds a school going quiet, a payment overdue, or an error spike. Needs the server-side setup below to actually fire.</div>
+        <div class="row" style="margin-top:10px;">
+          <button class="btn btn-ghost btn-sm" id="riskCheckNowBtn">Check now</button>
+        </div>
+        <div id="pushMsg"></div>`}
+    `;
+    const toggleBtn = document.getElementById("pushToggleBtn");
+    if (toggleBtn) toggleBtn.onclick = async () => {
+      const msg = document.getElementById("pushMsg"); if (msg) msg.innerHTML = "";
+      toggleBtn.disabled = true;
+      try {
+        if (sub) await unsubscribeFromPush(); else await subscribeToPush();
+        await renderPushCard();
+      } catch(e) { toggleBtn.disabled = false; if (msg) msg.innerHTML = `<div class="err">${e.message}</div>`; }
+    };
+    const checkBtn = document.getElementById("riskCheckNowBtn");
+    if (checkBtn) checkBtn.onclick = async () => {
+      const msg = document.getElementById("pushMsg"); msg.innerHTML = "";
+      checkBtn.disabled = true; checkBtn.textContent = "Checking…";
+      try {
+        const result = await runRiskCheckNow();
+        msg.innerHTML = `<div class="msg-ok">Checked. ${result && typeof result.alerts_sent === "number" ? `${result.alerts_sent} alert(s) sent.` : "See Edge Function logs for details."}</div>`;
+      } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
+      checkBtn.disabled = false; checkBtn.textContent = "Check now";
+    };
+  }
+  await renderPushCard();
+
+  const alertsCard = document.getElementById("alertsCard");
+  const engagementCard = document.getElementById("engagementCard");
+  try {
+    const [engagement, recentErrors] = await Promise.all([
+      listSchoolEngagement(),
+      countRecentErrors(60),
+    ]);
+    const today = new Date().toISOString().slice(0,10);
+    const overdue = engagement.filter(s => s.status === "active" && s.subscription_expires_at && s.subscription_expires_at < today);
+    const goingQuiet30 = engagement.filter(s => s.status === "active" && daysSince(s.last_login_at) !== null && daysSince(s.last_login_at) >= 30);
+    const errorSpike = recentErrors >= 15;
+
+    alertsCard.innerHTML = `
+      <div class="section-title">Needs attention</div>
+      ${(!overdue.length && !goingQuiet30.length && !errorSpike) ? `<div class="tiny-note">Nothing needs attention right now.</div>` : `
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${overdue.map(s => `<div class="row" style="justify-content:space-between;"><span><span class="badge badge-suspended">Payment</span> ${s.name} — subscription expired ${new Date(s.subscription_expires_at).toLocaleDateString()}</span></div>`).join("")}
+          ${goingQuiet30.map(s => `<div class="row" style="justify-content:space-between;"><span><span class="badge badge-warn">Inactive</span> ${s.name} — no logins in ${daysSince(s.last_login_at)}d</span></div>`).join("")}
+          ${errorSpike ? `<div class="row" style="justify-content:space-between;"><span><span class="badge badge-suspended">Errors</span> ${recentErrors} errors reported in the last hour</span></div>` : ""}
+        </div>`}
+      <div class="tiny-note" style="margin-top:10px;">This card refreshes when you open the tab. The push alerts above (once set up) reach you even when you don't have the app open.</div>`;
+  } catch(e) {
+    alertsCard.innerHTML = `<div class="section-title">Needs attention</div><div class="err">${e.message}</div><div class="tiny-note" style="margin-top:6px;">Run Step 1 below if this table/view doesn't exist yet.</div>`;
+  }
+
+  try {
+    const engagement = await listSchoolEngagement();
+    const rows = engagement.filter(s => s.status === "active");
+    engagementCard.innerHTML = `
+      <div class="section-title">Per-school engagement</div>
+      <div class="tiny-note" style="margin-bottom:8px;">Sorted least-recently-active first, so schools going quiet surface at the top.</div>
+      ${rows.length ? `
+        <div class="table-scroll"><table class="mini-table"><thead><tr><th>School</th><th>Last login</th><th>Active users (7d)</th><th>Status</th></tr></thead><tbody>
+          ${rows.map(s => {
+            const d = daysSince(s.last_login_at);
+            let riskBadge;
+            if (d === null) riskBadge = `<span class="badge badge-suspended">Never logged in</span>`;
+            else if (d >= 30) riskBadge = `<span class="badge badge-suspended">At risk (${d}d)</span>`;
+            else if (d >= 14) riskBadge = `<span class="badge badge-warn">Going quiet (${d}d)</span>`;
+            else riskBadge = `<span class="badge badge-active">Active</span>`;
+            return `<tr><td>${s.name}</td><td>${s.last_login_at ? new Date(s.last_login_at).toLocaleDateString() : '—'}</td><td>${s.active_users_7d}</td><td>${riskBadge}</td></tr>`;
+          }).join("")}
+        </tbody></table></div>
+      ` : `<div class="empty">No active schools yet.</div>`}`;
+  } catch(e) {
+    engagementCard.innerHTML = `<div class="section-title">Per-school engagement</div><div class="err">${e.message}</div>`;
+  }
 }
 
 async function renderMonitoring() {
@@ -2257,11 +2795,15 @@ async function renderComms() {
   function renderPicker() {
     picker.style.display = annAll.checked ? "none" : "block";
     if (!annAll.checked) {
-      picker.innerHTML = allSchools.map(s => `<label style="display:block;font-size:13px;margin-bottom:4px;"><input type="checkbox" class="annSchool" value="${s.id}" style="width:auto;margin-right:6px;" />${s.name}</label>`).join("") || `<div class="subtle">No schools yet.</div>`;
+      picker.innerHTML = allSchools.map(s => `<label style="display:block;font-size:13px;margin-bottom:4px;"><input type="checkbox" class="annSchool" value="${s.id}" ${pendingAnnounceTargets && pendingAnnounceTargets.includes(s.id) ? 'checked' : ''} style="width:auto;margin-right:6px;" />${s.name}</label>`).join("") || `<div class="subtle">No schools yet.</div>`;
     }
+  }
+  if (pendingAnnounceTargets && pendingAnnounceTargets.length) {
+    annAll.checked = false;
   }
   annAll.onchange = renderPicker;
   renderPicker();
+  pendingAnnounceTargets = null; // consumed
 
   document.getElementById("sendAnnBtn").onclick = async () => {
     const msg = document.getElementById("announceMsg"); msg.innerHTML = "";
@@ -2609,6 +3151,7 @@ function render() {
   if (view === "settings") renderSettings();
   else if (view === "schoolDetail") renderSchoolDetail();
   else if (view === "analytics") renderAnalytics();
+  else if (view === "risk") renderRisk();
   else if (view === "monitoring") renderMonitoring();
   else if (view === "comms") renderComms();
   else if (view === "updates") renderUpdates();
