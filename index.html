@@ -146,6 +146,10 @@
   .mini-table td{padding:8px 6px;border-bottom:1px solid var(--line);white-space:nowrap;}
   .table-scroll{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch;margin:0 -2px;}
   .table-scroll .mini-table{min-width:480px;}
+  .schools-table{min-width:840px;}
+  .schools-table td, .schools-table th{vertical-align:middle;}
+  .schools-table td.contact-cell, .schools-table th.contact-cell{white-space:normal;min-width:180px;}
+  .schools-table td.name-cell, .schools-table th.name-cell{white-space:normal;min-width:150px;}
   .table-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:10px;}
 
   /* ---- Nav / status links ---- */
@@ -1316,10 +1320,26 @@ async function fetchSchoolLogos(schoolIds) {
   rows.forEach(r => { if (r.school_id) map[r.school_id] = r.logo_url || null; });
   return map;
 }
+// The administrator who registered a school is just the earliest
+// non-deleted 'administration' profile for that school_id — there's no
+// separate marker for it, registration and first-admin creation happen in
+// the same register_school() transaction, so "earliest by created_at" is it.
+async function fetchFirstAdmins(schoolIds) {
+  const ids = Array.from(new Set((schoolIds || []).filter(Boolean)));
+  if (!ids.length) return {};
+  let rows;
+  try {
+    rows = await sb(`/rest/v1/profiles?${qs({school_id:`in.(${ids.join(",")})`, department:"eq.administration", "deleted_at":"is.null", select:"id,school_id,full_name,phone,email,whatsapp,created_at", order:"created_at.asc"})}`);
+  } catch(e) { return {}; }
+  const map = {};
+  rows.forEach(r => { if (r.school_id && !map[r.school_id]) map[r.school_id] = r; });
+  return map;
+}
 async function listSchools() {
   const schools = await sb(`/rest/v1/schools?${qs({select:"*", order:"created_at.desc"})}`);
-  const logos = await fetchSchoolLogos(schools.map(s => s.id));
-  return schools.map(s => Object.assign({}, s, { logo_url: logos[s.id] || null }));
+  const ids = schools.map(s => s.id);
+  const [logos, admins] = await Promise.all([fetchSchoolLogos(ids), fetchFirstAdmins(ids)]);
+  return schools.map(s => Object.assign({}, s, { logo_url: logos[s.id] || null, first_admin: admins[s.id] || null }));
 }
 async function createSchool(name) {
   assertFullAccess();
@@ -1962,23 +1982,38 @@ async function loadSchools() {
     if (!rest.length) { listEl.innerHTML = `<div class="tiny-note">No approved schools yet.</div>`; return; }
     const restIds = new Set(rest.map(s => s.id));
     Array.from(selectedSchoolIds).forEach(id => { if (!restIds.has(id)) selectedSchoolIds.delete(id); });
-    listEl.innerHTML = rest.map(s => `
-      <div class="school-row clickable" data-open="${s.id}">
-        <label style="display:flex;align-items:center;margin-right:2px;" onclick="event.stopPropagation();">
-          <input type="checkbox" class="schoolSelect" data-id="${s.id}" ${selectedSchoolIds.has(s.id)?'checked':''} style="width:16px;height:16px;" />
-        </label>
-        <div class="row" style="flex:1;min-width:0;">
-          ${schoolLogoHtml(s)}
-          <div style="min-width:0;">
-            <div class="school-name">${s.name}</div>
-            <div class="tiny-note">${[s.motto, s.location, s.size_range].filter(Boolean).join(" · ") || new Date(s.created_at).toLocaleString()}</div>
-          </div>
-        </div>
-        <div class="row" style="flex-wrap:wrap;justify-content:flex-end;gap:6px;">
-          ${statusBadge(s.status)}
-          ${s.status==='active' ? subscriptionBadge(s) : ""}
-        </div>
-      </div>`).join("");
+    const sizeLabel = (s) => s.size_range || "—";
+    const adminContact = (s) => {
+      const a = s.first_admin;
+      if (!a) return "—";
+      const bits = [a.phone, a.email].filter(Boolean);
+      return bits.length ? bits.join(" · ") : "—";
+    };
+    listEl.innerHTML = `<div class="table-scroll"><table class="mini-table schools-table">
+      <thead><tr>
+        <th></th>
+        <th>Logo</th>
+        <th class="name-cell">School Name</th>
+        <th>Location</th>
+        <th>Size</th>
+        <th class="name-cell">First Administrator</th>
+        <th class="contact-cell">Administrator Contact</th>
+        <th>Status</th>
+      </tr></thead>
+      <tbody>
+        ${rest.map(s => `
+          <tr class="clickable" data-open="${s.id}">
+            <td onclick="event.stopPropagation();"><input type="checkbox" class="schoolSelect" data-id="${s.id}" ${selectedSchoolIds.has(s.id)?'checked':''} style="width:16px;height:16px;" /></td>
+            <td>${schoolLogoHtml(s)}</td>
+            <td class="name-cell"><div class="school-name">${s.name}</div></td>
+            <td>${s.location || "—"}</td>
+            <td>${sizeLabel(s)}</td>
+            <td class="name-cell">${s.first_admin ? s.first_admin.full_name : "—"}</td>
+            <td class="contact-cell">${adminContact(s)}</td>
+            <td>${statusBadge(s.status)}${s.status==='active' ? ` ${subscriptionBadge(s)}` : ""}</td>
+          </tr>`).join("")}
+      </tbody>
+    </table></div>`;
     listEl.querySelectorAll("[data-open]").forEach(row => {
       row.onclick = () => { currentSchoolId = row.dataset.open; schoolSubTab = "subscription"; view = "schoolDetail"; render(); };
     });
