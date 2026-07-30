@@ -41,6 +41,21 @@
   .brand{font-weight:800;font-size:18px;letter-spacing:-.01em;color:var(--navy);}
   .brand span{color:var(--accent);}
   .acct-chip{display:flex;align-items:center;gap:8px;cursor:pointer;background:var(--card);border:1px solid var(--line);border-radius:99px;padding:5px 12px 5px 5px;box-shadow:var(--shadow-sm);transition:border-color .15s ease;}
+
+  /* ---- Notification bell (top-right corner) ---- */
+  .bell-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--navy);cursor:pointer;flex-shrink:0;box-shadow:var(--shadow-sm);}
+  .bell-btn svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+  .bell-badge{position:absolute;top:-3px;right:-3px;background:var(--red);color:#fff;font-size:9.5px;font-weight:800;line-height:1;min-width:16px;height:16px;border-radius:999px;display:flex;align-items:center;justify-content:center;padding:0 3px;box-shadow:0 0 0 2px var(--bg);}
+  .bell-panel{position:fixed;top:0;right:0;bottom:0;width:min(380px,100vw);background:#fff;box-shadow:-8px 0 30px rgba(20,23,35,.22);z-index:200;display:flex;flex-direction:column;animation:bellSlideIn .2s ease;}
+  @keyframes bellSlideIn{from{transform:translateX(100%);}to{transform:translateX(0);}}
+  .bell-panel-head{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--line);}
+  .bell-panel-body{flex:1;overflow-y:auto;padding:6px 14px 20px;}
+  .bell-item{padding:11px 4px;border-bottom:1px solid var(--line);}
+  .bell-item:last-child{border-bottom:none;}
+  .bell-item .b-title{font-weight:700;font-size:13.5px;color:var(--navy);}
+  .bell-item .b-body{font-size:12.5px;color:var(--ink-soft);margin-top:2px;}
+  .bell-item .b-meta{font-size:11px;color:var(--ink-soft);margin-top:4px;}
+  .bell-backdrop{position:fixed;inset:0;background:rgba(20,23,35,.35);z-index:190;}
   .acct-chip:hover{border-color:var(--accent);}
   .acct-avatar{width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
   .acct-name{font-size:12.5px;font-weight:700;color:var(--navy-2);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -660,15 +675,19 @@ create policy "Mother app can read platform errors" on platform_error_log for se
 drop policy if exists "Mother app can delete platform errors" on platform_error_log;
 create policy "Mother app can delete platform errors" on platform_error_log for delete using (true);
 
--- Communication Center: announcements sent to one, several, or all schools.
+-- Communication Center: announcements sent to one, several, or all schools —
+-- and, within a school, to a specific staff department (Administration,
+-- Academic, Finance) or everyone ('all'/null).
 create table if not exists mother_announcements (
   id uuid primary key default gen_random_uuid(),
   title text not null,
   body text not null,
   target_all boolean not null default false,
   target_school_ids uuid[],
+  target_department text,
   created_at timestamptz not null default now()
 );
+alter table mother_announcements add column if not exists target_department text;
 alter table mother_announcements enable row level security;
 drop policy if exists "Mother app can manage announcements" on mother_announcements;
 create policy "Mother app can manage announcements" on mother_announcements for all using (true) with check (true);
@@ -1158,6 +1177,7 @@ let auditLogItems = [];
 let auditLogShowAll = false;
 let selectedSchoolIds = new Set(); // dashboard bulk-select state
 let pendingAnnounceTargets = null; // school ids handed off from Dashboard bulk action to the Comms composer
+const DEPT_LABELS = { administration:"Administrators", academic:"Academic", finance:"Finance" };
 let loginActivityItems = [];
 let loginActivityShowAll = false;
 const SCHOOL_TABS = [["subscription","Subscription","subscription"],["features","Features & Modules","features"],["admins","Administrators","admins"],["danger","Danger Zone","danger",true]];
@@ -1439,10 +1459,11 @@ async function pingDatabase() {
 async function listAnnouncements() {
   return sb(`/rest/v1/mother_announcements?${qs({select:"*", order:"created_at.desc", limit:20})}`);
 }
-async function sendAnnouncement({ title, body, targetAll, targetSchoolIds }) {
+async function sendAnnouncement({ title, body, targetAll, targetSchoolIds, targetDepartment }) {
   assertFullAccess();
   const res = await sb(`/rest/v1/mother_announcements`, { method:"POST", body: JSON.stringify({
     title, body, target_all: !!targetAll, target_school_ids: targetAll ? null : targetSchoolIds,
+    target_department: (targetDepartment && targetDepartment !== "all") ? targetDepartment : null,
   }) });
   logAudit("send_announcement", "announcement", null, title);
   return res;
@@ -1461,6 +1482,69 @@ async function resolveSupportRequest(id) {
   const res = await sb(`/rest/v1/school_support_requests?id=eq.${id}`, { method:"PATCH", body: JSON.stringify({ status:"resolved" }) });
   logAudit("resolve_support_request", "support_request", id, null);
   return res;
+}
+
+/* ---------------- MOTHER APP NOTIFICATION BELL ----------------
+   Notifies the signed-in admin about open support requests coming in from
+   schools — the one thing in this app that's genuinely "something arrived
+   for you to look at". There's no per-admin read column server-side, so
+   (same convention as the school app's parent/staff bells) read state is
+   tracked locally per device/admin in localStorage; opening the panel
+   clears the badge immediately. */
+function motherBellReadKey() { return `novaMotherReadRequests_${motherAdmin?.id || motherAdmin?.username || "anon"}`; }
+function getMotherBellReadIds() {
+  try { return new Set(JSON.parse(localStorage.getItem(motherBellReadKey()) || "[]")); }
+  catch (e) { return new Set(); }
+}
+function markMotherBellRead(ids) {
+  if (!ids || !ids.length) return;
+  const read = getMotherBellReadIds();
+  ids.forEach(id => read.add(id));
+  try { localStorage.setItem(motherBellReadKey(), JSON.stringify([...read])); } catch (e) {}
+}
+async function refreshMotherBell() {
+  const btn = document.getElementById("motherBellBtn");
+  if (!btn) return;
+  btn.querySelector(".bell-badge")?.remove();
+  let open = [];
+  try { open = await listSupportRequests("open"); } catch (e) { return; }
+  const read = getMotherBellReadIds();
+  const count = open.filter(r => !read.has(r.id)).length;
+  if (count > 0) btn.appendChild(el(`<span class="bell-badge">${count > 99 ? "99+" : count}</span>`));
+}
+function closeMotherBellPanel() {
+  document.getElementById("motherBellBackdrop")?.remove();
+  document.getElementById("motherBellPanel")?.remove();
+}
+async function openMotherBellPanel() {
+  closeMotherBellPanel();
+  const backdrop = el(`<div class="bell-backdrop" id="motherBellBackdrop"></div>`);
+  const panel = el(`
+    <div class="bell-panel" id="motherBellPanel">
+      <div class="bell-panel-head">
+        <div style="font-weight:800;font-size:15px;color:var(--navy);">Notifications</div>
+        <button class="bell-btn" id="motherBellClose">&times;</button>
+      </div>
+      <div class="bell-panel-body" id="motherBellBody"><div class="tiny-note">Loading…</div></div>
+    </div>`);
+  document.body.appendChild(backdrop);
+  document.body.appendChild(panel);
+  backdrop.onclick = closeMotherBellPanel;
+  document.getElementById("motherBellClose").onclick = closeMotherBellPanel;
+
+  let open = [];
+  try { open = await listSupportRequests("open"); } catch (e) {}
+  const body = document.getElementById("motherBellBody");
+  if (!body) return; // closed while loading
+  body.innerHTML = open.length ? open.map(r => `
+    <div class="bell-item">
+      <div class="b-title">${r.subject}</div>
+      <div class="b-body">${r.message}</div>
+      <div class="b-meta">${r.schools?.name || "Unknown school"} · ${new Date(r.created_at).toLocaleString()}</div>
+    </div>`).join("") : `<div class="empty">No open support requests.</div>`;
+
+  markMotherBellRead(open.map(r => r.id));
+  refreshMotherBell();
 }
 async function listChangelog() {
   return sb(`/rest/v1/platform_changelog?${qs({select:"*", order:"created_at.desc", limit:20})}`);
@@ -1600,15 +1684,21 @@ function topBarHtml() {
   const initial = (motherAdmin?.full_name || motherAdmin?.username || "?").trim().charAt(0).toUpperCase();
   return `<div class="topbar">
     <div class="brand" style="display:flex;align-items:center;gap:8px;"><img class="app-logo topbar-logo" src="${APP_LOGO_URL}" alt="Nova Mother App">Nova <span>Mother App</span></div>
-    <div class="acct-chip" id="acctChip" title="Account &amp; settings">
-      <span class="acct-avatar">${initial}</span>
-      <span class="acct-name">${motherAdmin?.full_name || motherAdmin?.username || ""}</span>
+    <div class="row" style="gap:8px;">
+      <button class="bell-btn" id="motherBellBtn" title="Notifications">${ICONS.bell || `<svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>`}</button>
+      <div class="acct-chip" id="acctChip" title="Account &amp; settings">
+        <span class="acct-avatar">${initial}</span>
+        <span class="acct-name">${motherAdmin?.full_name || motherAdmin?.username || ""}</span>
+      </div>
     </div>
   </div>`;
 }
 function wireTopBar() {
   const chip = document.getElementById("acctChip");
   if (chip) chip.onclick = () => { view = "settings"; render(); };
+  const bell = document.getElementById("motherBellBtn");
+  if (bell) bell.onclick = openMotherBellPanel;
+  refreshMotherBell();
 }
 function navTabs(active) {
   const tabs = [
@@ -2774,6 +2864,16 @@ async function renderComms() {
           <label><input type="checkbox" id="annAll" checked style="width:auto;margin-right:6px;" />Send to all schools</label>
         </div>
         <div id="annSchoolPicker" style="display:none;" class="tiny-note">Loading schools…</div>
+        <div class="field">
+          <label>Department</label>
+          <select id="annDept">
+            <option value="all">All departments</option>
+            <option value="administration">Administrators</option>
+            <option value="academic">Academic</option>
+            <option value="finance">Finance</option>
+          </select>
+          <div class="tiny-note" style="margin-top:4px;">Narrows who at each school sees this — Administrators always see everything regardless of this choice.</div>
+        </div>
         <button class="btn btn-primary btn-sm" id="sendAnnBtn">Send</button>
       </div>
       <div class="card">
@@ -2811,10 +2911,11 @@ async function renderComms() {
     const body = document.getElementById("annBody").value.trim();
     const targetAll = annAll.checked;
     const targetSchoolIds = Array.from(document.querySelectorAll(".annSchool:checked")).map(cb => cb.value);
+    const targetDepartment = document.getElementById("annDept").value;
     try {
       if (!title || !body) throw new Error("Enter a title and message.");
       if (!targetAll && !targetSchoolIds.length) throw new Error("Select at least one school, or send to all.");
-      await sendAnnouncement({ title, body, targetAll, targetSchoolIds });
+      await sendAnnouncement({ title, body, targetAll, targetSchoolIds, targetDepartment });
       msg.innerHTML = `<div class="msg-ok">Announcement sent.</div>`;
       document.getElementById("annTitle").value = ""; document.getElementById("annBody").value = "";
       loadAnnouncements();
@@ -2833,7 +2934,7 @@ async function loadAnnouncements() {
         <div>
           <div style="font-weight:700;">${a.title}</div>
           <div class="tiny-note">${a.body}</div>
-          <div class="tiny-note">${a.target_all ? "All schools" : `${(a.target_school_ids||[]).length} school(s)`} · ${new Date(a.created_at).toLocaleDateString()}</div>
+          <div class="tiny-note">${a.target_all ? "All schools" : `${(a.target_school_ids||[]).length} school(s)`} · ${DEPT_LABELS[a.target_department] || "All departments"} · ${new Date(a.created_at).toLocaleDateString()}</div>
         </div>
         <button class="btn btn-danger btn-sm" data-del="${a.id}">Delete</button>
       </div>`).join("");
