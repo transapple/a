@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
-<title>Nova Mother App</title>
+<title>TransApple Technologies</title>
 
 <!-- ---- PWA: installability, icons & theme ---- -->
 <link rel="manifest" href="manifest.json">
@@ -14,7 +14,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Nova Mother App">
+<meta name="apple-mobile-web-app-title" content="TransApple Technologies">
 
 <style>
   :root{
@@ -34,10 +34,10 @@
   }
   *{box-sizing:border-box;}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;}
-  .wrap{max-width:720px;margin:0 auto;padding:18px 16px calc(86px + env(safe-area-inset-bottom,0px));}
+  .wrap{max-width:720px;margin:0 auto;padding:calc(78px + env(safe-area-inset-top,0px)) 16px calc(86px + env(safe-area-inset-bottom,0px));}
 
-  /* ---- Top bar / brand / account chip ---- */
-  .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:10px;}
+  /* ---- Top bar / brand / account chip — fixed top bar ---- */
+  .topbar{position:fixed;top:0;left:0;right:0;max-width:720px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:calc(14px + env(safe-area-inset-top,0px)) 16px 14px;background:var(--bg);box-shadow:0 6px 20px -14px rgba(20,23,35,.18);z-index:150;}
   .brand{font-weight:800;font-size:18px;letter-spacing:-.01em;color:var(--navy);}
   .brand span{color:var(--accent);}
   .acct-chip{display:flex;align-items:center;gap:8px;cursor:pointer;background:var(--card);border:1px solid var(--line);border-radius:99px;padding:5px 12px 5px 5px;box-shadow:var(--shadow-sm);transition:border-color .15s ease;}
@@ -122,6 +122,9 @@
   .school-row{display:flex;justify-content:space-between;align-items:center;padding:13px 2px;border-bottom:1px solid var(--line);}
   .school-row:last-child{border-bottom:none;}
   .school-name{font-weight:700;color:var(--navy);}
+  .school-logo{width:36px;height:36px;border-radius:10px;object-fit:cover;flex-shrink:0;background:var(--accent-tint);color:var(--accent-dark);font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+  .school-logo img{width:100%;height:100%;object-fit:cover;display:block;}
+  .school-logo-lg{width:52px;height:52px;border-radius:14px;font-size:17px;}
   .clickable{cursor:pointer;border-radius:var(--radius-sm);}
   .clickable:hover{background:var(--surface-2);}
   .admin-row{display:flex;justify-content:space-between;align-items:flex-start;padding:11px 2px;border-bottom:1px solid var(--line);gap:8px;}
@@ -198,9 +201,9 @@
 </head>
 <body>
 <div id="bootSplash">
-  <div class="splash-logo-wrap"><img class="app-logo splash-logo" src="https://i.postimg.cc/hvy7NPrV/20260729-202128.png" alt="Nova Mother App"></div>
+  <div class="splash-logo-wrap"><img class="app-logo splash-logo" src="https://i.postimg.cc/hvy7NPrV/20260729-202128.png" alt="TransApple Technologies"></div>
   <div style="text-align:center;">
-    <div class="splash-brand">Nova <span>Mother App</span></div>
+    <div class="splash-brand">TransApple <span>Technologies</span></div>
     <div class="splash-sub" style="margin-top:4px;">Loading…</div>
   </div>
 </div>
@@ -259,17 +262,17 @@ function installInstructionsHtml() {
     return `<div class="gate-instructions"><b>Install on iPhone/iPad:</b>
       <ol><li>Tap the <b>Share</b> icon in Safari's toolbar</li>
       <li>Scroll down and tap <b>Add to Home Screen</b></li>
-      <li>Tap <b>Add</b>, then open Nova Mother App from your home screen</li></ol></div>`;
+      <li>Tap <b>Add</b>, then open TransApple Technologies from your home screen</li></ol></div>`;
   }
   if (isAndroid) {
     return `<div class="gate-instructions"><b>Install on Android:</b>
       <ol><li>Tap the <b>⋮</b> menu in your browser</li>
       <li>Tap <b>Install app</b> (or <b>Add to Home screen</b>)</li>
-      <li>Confirm, then open Nova Mother App from your home screen</li></ol></div>`;
+      <li>Confirm, then open TransApple Technologies from your home screen</li></ol></div>`;
   }
   return `<div class="gate-instructions"><b>Install on desktop:</b>
     <ol><li>Click the install icon in your address bar (or the browser menu)</li>
-    <li>Choose <b>Install Nova Mother App</b></li>
+    <li>Choose <b>Install TransApple Technologies</b></li>
     <li>Launch it from your desktop/apps going forward</li></ol></div>`;
 }
 
@@ -282,16 +285,16 @@ function renderInstallGate(justInstalled) {
 
   if (justInstalled) {
     el.innerHTML = `<div class="gate-card">
-      <img class="app-logo gate-logo" src="${APP_LOGO_URL}" alt="Nova Mother App">
-      <div class="gate-title">Nova <span>Mother App</span></div>
-      <div class="gate-success">✓ Installed! Open Nova Mother App from your home screen or app list to continue.</div>
+      <img class="app-logo gate-logo" src="${APP_LOGO_URL}" alt="TransApple Technologies">
+      <div class="gate-title">TransApple <span>Technologies</span></div>
+      <div class="gate-success">✓ Installed! Open TransApple Technologies from your home screen or app list to continue.</div>
     </div>`;
     return;
   }
 
   el.innerHTML = `<div class="gate-card">
-    <img class="app-logo gate-logo" src="${APP_LOGO_URL}" alt="Nova Mother App">
-    <div class="gate-title">Nova <span>Mother App</span></div>
+    <img class="app-logo gate-logo" src="${APP_LOGO_URL}" alt="TransApple Technologies">
+    <div class="gate-title">TransApple <span>Technologies</span></div>
     <div class="gate-desc">This is an installable app. Install it to your device to continue — it only takes a moment.</div>
     <button class="gate-btn" id="installNowBtn">Install App</button>
     <div id="gateInstructionsSlot"></div>
@@ -1164,6 +1167,11 @@ async function sb(path, opts = {}) {
   return data;
 }
 const qs = (o) => Object.entries(o).filter(([,v])=>v!=null && v!=="").map(([k,v])=>`${k}=${v}`).join("&");
+function initials(name) { return (name||"?").split(" ").filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join(""); }
+function schoolLogoHtml(s, size) {
+  const cls = size === "lg" ? "school-logo school-logo-lg" : "school-logo";
+  return `<div class="${cls}">${s.logo_url ? `<img src="${s.logo_url}" alt="${s.name||''} logo"/>` : initials(s.name)}</div>`;
+}
 
 const REMEMBER_KEY = "novaMotherUsername";
 let motherAdmin = null;
@@ -1293,8 +1301,25 @@ async function setMotherAdminStatus(actorPassword, targetId, newRole, newActive)
   }) });
 }
 
+// Schools don't store their own logo here — it lives in the School Management
+// System's own `school_settings` table (school_id-scoped, same Supabase
+// project, readable by anyone per its own RLS). Pulling it live on every load
+// means a logo change in the school app shows up here automatically, with
+// nothing to keep in sync by hand.
+async function fetchSchoolLogos(schoolIds) {
+  const ids = Array.from(new Set((schoolIds || []).filter(Boolean)));
+  if (!ids.length) return {};
+  let rows;
+  try { rows = await sb(`/rest/v1/school_settings?${qs({school_id:`in.(${ids.join(",")})`, select:"school_id,logo_url"})}`); }
+  catch(e) { return {}; } // school app's table/RLS not set up yet — degrade to initials, don't break the schools list
+  const map = {};
+  rows.forEach(r => { if (r.school_id) map[r.school_id] = r.logo_url || null; });
+  return map;
+}
 async function listSchools() {
-  return sb(`/rest/v1/schools?${qs({select:"*", order:"created_at.desc"})}`);
+  const schools = await sb(`/rest/v1/schools?${qs({select:"*", order:"created_at.desc"})}`);
+  const logos = await fetchSchoolLogos(schools.map(s => s.id));
+  return schools.map(s => Object.assign({}, s, { logo_url: logos[s.id] || null }));
 }
 async function createSchool(name) {
   assertFullAccess();
@@ -1369,14 +1394,19 @@ function exportSchoolsCSV(schools) {
     { label:"Subscription amount", get:s=>s.subscription_amount??"" },
     { label:"Expires on", get:s=>s.subscription_expires_at||"" },
     { label:"Location", get:s=>s.location||"" },
-    { label:"Registered", get:s=>s.created_at ? new Date(s.created_at).toLocaleDateString() : "" },
+    { label:"Registered", get:s=>s.created_at ? new Date(s.created_at).toLocaleString() : "" },
   ]);
   downloadCSV(`nova-schools-${new Date().toISOString().slice(0,10)}.csv`, csv);
 }
 
 async function getSchool(id) {
   const rows = await sb(`/rest/v1/schools?${qs({id:`eq.${id}`, select:"*"})}`);
-  return rows[0] || null;
+  const school = rows[0] || null;
+  if (school) {
+    const logos = await fetchSchoolLogos([school.id]);
+    school.logo_url = logos[school.id] || null;
+  }
+  return school;
 }
 async function approveSchool(id) {
   assertFullAccess();
@@ -1683,7 +1713,7 @@ const ICONS = {
 function topBarHtml() {
   const initial = (motherAdmin?.full_name || motherAdmin?.username || "?").trim().charAt(0).toUpperCase();
   return `<div class="topbar">
-    <div class="brand" style="display:flex;align-items:center;gap:8px;"><img class="app-logo topbar-logo" src="${APP_LOGO_URL}" alt="Nova Mother App">Nova <span>Mother App</span></div>
+    <div class="brand" style="display:flex;align-items:center;gap:8px;"><img class="app-logo topbar-logo" src="${APP_LOGO_URL}" alt="TransApple Technologies"></div>
     <div class="row" style="gap:8px;">
       <button class="bell-btn" id="motherBellBtn" title="Notifications">${ICONS.bell || `<svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>`}</button>
       <div class="acct-chip" id="acctChip" title="Account &amp; settings">
@@ -1736,39 +1766,42 @@ let authMode = "login"; // "login" or "create"
 function renderLogin() {
   app().innerHTML = `
     <div class="login-wrap"><div class="login-card">
-      <img class="app-logo login-logo" src="${APP_LOGO_URL}" alt="Nova Mother App">
-      <div class="brand" style="text-align:center;margin-bottom:16px;">Nova <span>Mother App</span></div>
+      <img class="app-logo login-logo" src="${APP_LOGO_URL}" alt="TransApple Technologies">
+      <div class="brand" style="text-align:center;margin-bottom:16px;">TransApple <span>Technologies</span></div>
       <div id="loginMsg"></div>
       <div id="loginForm"></div>
       <div class="tiny-note" style="text-align:center;margin-top:12px;">${authMode==="login" ? `New admin? <span class="link-btn" id="toCreate">Create account</span>` : `Already an admin? <span class="link-btn" id="toLogin">Log in</span>`}</div>
-      <details style="margin-top:18px;"><summary>First time setup</summary>
-        <p class="tiny-note">Run this once in Supabase → SQL Editor, then create your first mother-admin account with a single insert (shown in a comment at the bottom of the script), since nothing exists yet to prove you're an admin. Every admin after that can be added from here or from Settings inside the app.</p>
-        <pre>${MOTHER_SETUP_SQL}</pre>
-      </details>
-      <details style="margin-top:10px;"><summary>Upgrade: approvals, billing &amp; admin management</summary>
-        <p class="tiny-note">Run this once too (after the script above) to unlock school approval, subscriptions/billing, and administrator management. Safe to re-run.</p>
-        <pre>${MOTHER_SUITE_SQL}</pre>
-      </details>
-      <details style="margin-top:10px;"><summary>Upgrade: monitoring, analytics, communications &amp; updates</summary>
-        <p class="tiny-note">Run this once too (after the two scripts above) to unlock System Monitoring, richer Analytics, the Communication Center, and Updates &amp; Maintenance. Safe to re-run.</p>
-        <pre>${MOTHER_OPS_SQL}</pre>
-      </details>
-      <details style="margin-top:10px;"><summary>Upgrade: admin roles, audit log &amp; login monitoring</summary>
-        <p class="tiny-note">Run this once too (after the three scripts above) to unlock the Security tab: admin roles/permissions, a full audit log, and login-activity monitoring. Safe to re-run.</p>
-        <pre>${MOTHER_SECURITY_SQL}</pre>
-      </details>
-      <details style="margin-top:10px;"><summary>Upgrade: feature/module control per school</summary>
-        <p class="tiny-note">Run this once too to unlock the "Features &amp; Modules" panel on each school's page — lets you turn sections like Fees, Exams or Comms on/off per school. Safe to re-run.</p>
-        <pre>${SCHOOL_FEATURES_SQL}</pre>
-      </details>
-      <details style="margin-top:10px;"><summary>Upgrade: permanently clear/delete a school's data</summary>
-        <p class="tiny-note">Run this once too (needs the admin-roles script above already run) to unlock the Danger Zone on each school's page — clear all of a school's data, or delete the school and its data completely. Safe to re-run.</p>
-        <pre>${SCHOOL_DANGER_ZONE_SQL}</pre>
-      </details>
-      <details style="margin-top:10px;"><summary>Upgrade: Risk &amp; Retention (engagement metrics + push alerts)</summary>
-        <p class="tiny-note">Run this once too to unlock the Risk &amp; Retention tab — per-school engagement metrics and (with a bit more setup shown in that tab) real push alerts. Safe to re-run.</p>
-        <pre>${RISK_ALERTS_SQL}</pre>
-      </details>
+      <button class="btn btn-ghost btn-sm" id="dbSetupToggleBtn" style="width:100%;margin-top:18px;">Database</button>
+      <div id="dbSetupPanel" style="display:none;margin-top:10px;">
+        <details><summary>First time setup</summary>
+          <p class="tiny-note">Run this once in Supabase → SQL Editor, then create your first mother-admin account with a single insert (shown in a comment at the bottom of the script), since nothing exists yet to prove you're an admin. Every admin after that can be added from here or from Settings inside the app.</p>
+          <pre>${MOTHER_SETUP_SQL}</pre>
+        </details>
+        <details style="margin-top:10px;"><summary>Upgrade: approvals, billing &amp; admin management</summary>
+          <p class="tiny-note">Run this once too (after the script above) to unlock school approval, subscriptions/billing, and administrator management. Safe to re-run.</p>
+          <pre>${MOTHER_SUITE_SQL}</pre>
+        </details>
+        <details style="margin-top:10px;"><summary>Upgrade: monitoring, analytics, communications &amp; updates</summary>
+          <p class="tiny-note">Run this once too (after the two scripts above) to unlock System Monitoring, richer Analytics, the Communication Center, and Updates &amp; Maintenance. Safe to re-run.</p>
+          <pre>${MOTHER_OPS_SQL}</pre>
+        </details>
+        <details style="margin-top:10px;"><summary>Upgrade: admin roles, audit log &amp; login monitoring</summary>
+          <p class="tiny-note">Run this once too (after the three scripts above) to unlock the Security tab: admin roles/permissions, a full audit log, and login-activity monitoring. Safe to re-run.</p>
+          <pre>${MOTHER_SECURITY_SQL}</pre>
+        </details>
+        <details style="margin-top:10px;"><summary>Upgrade: feature/module control per school</summary>
+          <p class="tiny-note">Run this once too to unlock the "Features &amp; Modules" panel on each school's page — lets you turn sections like Fees, Exams or Comms on/off per school. Safe to re-run.</p>
+          <pre>${SCHOOL_FEATURES_SQL}</pre>
+        </details>
+        <details style="margin-top:10px;"><summary>Upgrade: permanently clear/delete a school's data</summary>
+          <p class="tiny-note">Run this once too (needs the admin-roles script above already run) to unlock the Danger Zone on each school's page — clear all of a school's data, or delete the school and its data completely. Safe to re-run.</p>
+          <pre>${SCHOOL_DANGER_ZONE_SQL}</pre>
+        </details>
+        <details style="margin-top:10px;"><summary>Upgrade: Risk &amp; Retention (engagement metrics)</summary>
+          <p class="tiny-note">Run this once too to unlock the Risk &amp; Retention tab — per-school engagement metrics. Safe to re-run.</p>
+          <pre>${RISK_ALERTS_SQL}</pre>
+        </details>
+      </div>
     </div></div>`;
   const formDiv = document.getElementById("loginForm");
   if (authMode === "login") {
@@ -1821,6 +1854,11 @@ function renderLogin() {
   if (toCreate) toCreate.onclick = () => { authMode = "create"; render(); };
   const toLogin = document.getElementById("toLogin");
   if (toLogin) toLogin.onclick = () => { authMode = "login"; render(); };
+  const dbToggleBtn = document.getElementById("dbSetupToggleBtn");
+  const dbPanel = document.getElementById("dbSetupPanel");
+  if (dbToggleBtn && dbPanel) {
+    dbToggleBtn.onclick = () => { dbPanel.style.display = dbPanel.style.display === "none" ? "" : "none"; };
+  }
 }
 
 async function renderDashboard() {
@@ -1895,9 +1933,12 @@ async function loadSchools() {
         pendingCard.style.display = "";
         pendingList.innerHTML = pending.map(s => `
           <div class="school-row">
-            <div>
-              <div class="school-name">${s.name}</div>
-              <div class="tiny-note">${[s.motto, s.location].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleDateString()}</div>
+            <div class="row" style="gap:10px;">
+              ${schoolLogoHtml(s)}
+              <div>
+                <div class="school-name">${s.name}</div>
+                <div class="tiny-note">${[s.motto, s.location].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleString()}</div>
+              </div>
             </div>
             <div class="row">
               <button class="btn btn-primary btn-sm" data-approve="${s.id}">Approve</button>
@@ -1926,9 +1967,12 @@ async function loadSchools() {
         <label style="display:flex;align-items:center;margin-right:2px;" onclick="event.stopPropagation();">
           <input type="checkbox" class="schoolSelect" data-id="${s.id}" ${selectedSchoolIds.has(s.id)?'checked':''} style="width:16px;height:16px;" />
         </label>
-        <div>
-          <div class="school-name">${s.name}</div>
-          <div class="tiny-note">${[s.motto, s.location, s.size_range].filter(Boolean).join(" · ") || new Date(s.created_at).toLocaleDateString()}</div>
+        <div class="row" style="flex:1;min-width:0;">
+          ${schoolLogoHtml(s)}
+          <div style="min-width:0;">
+            <div class="school-name">${s.name}</div>
+            <div class="tiny-note">${[s.motto, s.location, s.size_range].filter(Boolean).join(" · ") || new Date(s.created_at).toLocaleString()}</div>
+          </div>
         </div>
         <div class="row" style="flex-wrap:wrap;justify-content:flex-end;gap:6px;">
           ${statusBadge(s.status)}
@@ -2114,8 +2158,8 @@ function renderSettingsDatabaseTab() {
         <p class="tiny-note">If the Danger Zone on a school's page errors out, run this once in Supabase → SQL Editor.</p>
         <pre>${SCHOOL_DANGER_ZONE_SQL}</pre>
       </details>
-      <details style="margin-top:8px;"><summary>Upgrade: Risk &amp; Retention (engagement metrics + push alerts)</summary>
-        <p class="tiny-note">If the Risk &amp; Retention tab errors out, run this once in Supabase → SQL Editor. Full push-alert setup (Edge Function + Cron) is shown directly in that tab.</p>
+      <details style="margin-top:8px;"><summary>Upgrade: Risk &amp; Retention (engagement metrics)</summary>
+        <p class="tiny-note">If the Risk &amp; Retention tab errors out, run this once in Supabase → SQL Editor.</p>
         <pre>${RISK_ALERTS_SQL}</pre>
       </details>
     </div>`;
@@ -2205,10 +2249,13 @@ async function renderSchoolDetail() {
       <div class="back-link" id="backBtn">‹ Back to schools</div>
       <div class="card">
         <div class="row" style="justify-content:space-between;align-items:flex-start;">
-          <div>
-            <div class="school-name" style="font-size:17px;">${s.name}</div>
-            <div class="tiny-note">${[s.motto, s.location, s.size_range].filter(Boolean).join(" · ") || "No profile details yet"}</div>
-            <div class="tiny-note">Registered ${new Date(s.created_at).toLocaleDateString()}${s.approved_at ? " · Approved " + new Date(s.approved_at).toLocaleDateString() : ""}</div>
+          <div class="row" style="align-items:flex-start;gap:12px;">
+            ${schoolLogoHtml(s, "lg")}
+            <div>
+              <div class="school-name" style="font-size:17px;">${s.name}</div>
+              <div class="tiny-note">${[s.motto, s.location, s.size_range].filter(Boolean).join(" · ") || "No profile details yet"}</div>
+              <div class="tiny-note">Registered ${new Date(s.created_at).toLocaleString()}${s.approved_at ? " · Approved " + new Date(s.approved_at).toLocaleString() : ""}</div>
+            </div>
           </div>
           <div>${statusBadge(s.status)}</div>
         </div>
@@ -2471,7 +2518,7 @@ async function loadPaymentHistory(schoolId) {
     if (!payments.length) { el.innerHTML = `<div class="empty">No payments recorded yet.</div>`; return; }
     el.innerHTML = `<table class="mini-table"><thead><tr><th>Date</th><th>Amount</th><th>Method</th><th>Note</th></tr></thead><tbody>
       ${payments.map(p => `<tr>
-        <td>${new Date(p.created_at).toLocaleDateString()}</td>
+        <td>${new Date(p.created_at).toLocaleString()}</td>
         <td>${p.amount}</td>
         <td>${(p.method||'—').replace('_',' ')}</td>
         <td>${p.note||'—'}</td>
@@ -2682,30 +2729,6 @@ async function renderRisk() {
       <div class="card" id="pushCard"><div class="tiny-note">Checking push status…</div></div>
       <div class="card" id="alertsCard"><div class="tiny-note">Loading…</div></div>
       <div class="card" id="engagementCard"><div class="tiny-note">Loading…</div></div>
-      <div class="card">
-        <div class="section-title">Server-side setup</div>
-        <div class="tiny-note" style="margin-bottom:8px;">This tab shows everything live whenever you open the app. For real push notifications — ones that arrive even with the app fully closed — a small Edge Function has to run on a schedule outside this file. It's a one-time setup.</div>
-        <details><summary>Step 1 — database (view, subscriptions, dedupe table)</summary>
-          <p class="tiny-note">Run this once in Supabase → SQL Editor.</p>
-          <pre>${RISK_ALERTS_SQL}</pre>
-        </details>
-        <details style="margin-top:8px;"><summary>Step 2 — the Edge Function that checks &amp; sends pushes</summary>
-          <p class="tiny-note">In your Supabase project: Edge Functions → Create a new function named exactly <code>risk-alerts-check</code>, paste this in, then deploy it (via the dashboard's inline editor, or <code>supabase functions deploy risk-alerts-check</code> with the CLI).</p>
-          <pre>${RISK_ALERTS_FUNCTION_CODE}</pre>
-        </details>
-        <details style="margin-top:8px;"><summary>Step 3 — secrets the function needs</summary>
-          <p class="tiny-note">In Edge Functions → risk-alerts-check → Secrets, add these four. <code>VAPID_PUBLIC_KEY</code> must match the one already baked into this app — don't regenerate it.</p>
-          <pre>SUPABASE_URL = ${SUPABASE_URL}
-SUPABASE_SERVICE_ROLE_KEY = (Project Settings → API → service_role key — keep this secret, never put it in this HTML file)
-VAPID_PUBLIC_KEY = ${VAPID_PUBLIC_KEY}
-VAPID_PRIVATE_KEY = 2S7jFJrw4Mwds7ly-US5K17DTjDBKtgOw4l_PTG0uYA
-VAPID_SUBJECT = mailto:you@yourdomain.com   (any contact address — required by the push spec)</pre>
-          <p class="tiny-note" style="margin-top:6px;">⚠️ The private key above is a real, working key generated for this app — but it's printed here in plain text, so anyone who can read this HTML can read it too. Treat it as already-compromised: paste it into the Edge Function secret now, then generate your own replacement pair (e.g. <code>npx web-push generate-vapid-keys</code>) and update both the secret and <code>VAPID_PUBLIC_KEY</code> in this file's constants the moment you can.</p>
-        </details>
-        <details style="margin-top:8px;"><summary>Step 4 — run it on a schedule</summary>
-          <p class="tiny-note">In Edge Functions → risk-alerts-check → Cron, add a schedule (e.g. every 30–60 minutes: <code>*/30 * * * *</code>). That's it — from then on it checks conditions and pushes automatically, even with this app closed.</p>
-        </details>
-      </div>
     </div>`;
   wireTopBar();
   wireNavTabs();
@@ -2722,7 +2745,7 @@ VAPID_SUBJECT = mailto:you@yourdomain.com   (any contact address — required by
           <span class="badge ${sub ? 'badge-active' : 'badge-deactivated'}">${sub ? 'Subscribed' : 'Not subscribed'}</span>
           <button class="btn btn-sm ${sub ? 'btn-ghost' : 'btn-primary'}" id="pushToggleBtn">${sub ? 'Unsubscribe' : 'Enable push alerts'}</button>
         </div>
-        <div class="tiny-note" style="margin-top:8px;">When enabled, this device gets a push notification whenever the scheduled check (set up below) finds a school going quiet, a payment overdue, or an error spike. Needs the server-side setup below to actually fire.</div>
+        <div class="tiny-note" style="margin-top:8px;">When enabled, this device gets a push notification whenever the scheduled check finds a school going quiet, a payment overdue, or an error spike. Needs the database setup in Settings → Database, plus a scheduled Edge Function, to actually fire.</div>
         <div class="row" style="margin-top:10px;">
           <button class="btn btn-ghost btn-sm" id="riskCheckNowBtn">Check now</button>
         </div>
@@ -2790,7 +2813,7 @@ VAPID_SUBJECT = mailto:you@yourdomain.com   (any contact address — required by
             else if (d >= 30) riskBadge = `<span class="badge badge-suspended">At risk (${d}d)</span>`;
             else if (d >= 14) riskBadge = `<span class="badge badge-warn">Going quiet (${d}d)</span>`;
             else riskBadge = `<span class="badge badge-active">Active</span>`;
-            return `<tr><td>${s.name}</td><td>${s.last_login_at ? new Date(s.last_login_at).toLocaleDateString() : '—'}</td><td>${s.active_users_7d}</td><td>${riskBadge}</td></tr>`;
+            return `<tr><td>${s.name}</td><td>${s.last_login_at ? new Date(s.last_login_at).toLocaleString() : '—'}</td><td>${s.active_users_7d}</td><td>${riskBadge}</td></tr>`;
           }).join("")}
         </tbody></table></div>
       ` : `<div class="empty">No active schools yet.</div>`}`;
@@ -2934,7 +2957,7 @@ async function loadAnnouncements() {
         <div>
           <div style="font-weight:700;">${a.title}</div>
           <div class="tiny-note">${a.body}</div>
-          <div class="tiny-note">${a.target_all ? "All schools" : `${(a.target_school_ids||[]).length} school(s)`} · ${DEPT_LABELS[a.target_department] || "All departments"} · ${new Date(a.created_at).toLocaleDateString()}</div>
+          <div class="tiny-note">${a.target_all ? "All schools" : `${(a.target_school_ids||[]).length} school(s)`} · ${DEPT_LABELS[a.target_department] || "All departments"} · ${new Date(a.created_at).toLocaleString()}</div>
         </div>
         <button class="btn btn-danger btn-sm" data-del="${a.id}">Delete</button>
       </div>`).join("");
@@ -2952,7 +2975,7 @@ async function loadSupportRequests() {
       <div class="admin-row">
         <div>
           <div style="font-weight:700;">${r.subject} <span class="badge ${r.status==='open'?'badge-warn':'badge-active'}">${r.status}</span></div>
-          <div class="tiny-note">${r.schools?.name || 'Unknown school'} · ${new Date(r.created_at).toLocaleDateString()}</div>
+          <div class="tiny-note">${r.schools?.name || 'Unknown school'} · ${new Date(r.created_at).toLocaleString()}</div>
           <div class="tiny-note">${r.message}</div>
         </div>
         ${r.status==='open' ? `<button class="btn btn-ghost btn-sm" data-resolve="${r.id}">Mark resolved</button>` : ""}
@@ -3044,7 +3067,7 @@ async function loadChangelog() {
     if (!items.length) { el.innerHTML = `<div class="empty">No entries yet.</div>`; return; }
     el.innerHTML = items.map(c => `
       <div class="admin-row">
-        <div><div style="font-weight:700;">${c.title}</div><div class="tiny-note">${c.description||""} · ${new Date(c.created_at).toLocaleDateString()}</div></div>
+        <div><div style="font-weight:700;">${c.title}</div><div class="tiny-note">${c.description||""} · ${new Date(c.created_at).toLocaleString()}</div></div>
         <button class="btn btn-danger btn-sm" data-del="${c.id}">Delete</button>
       </div>`).join("");
     el.querySelectorAll("[data-del]").forEach(btn => { btn.onclick = async () => { await deleteChangelogEntry(btn.dataset.del); loadChangelog(); }; });
@@ -3129,7 +3152,7 @@ async function loadAdminAccounts() {
       <div class="admin-row">
         <div>
           <div style="font-weight:700;">${a.full_name || a.username} ${a.username===motherAdmin.username ? '<span class="tiny-note">(you)</span>' : ''}</div>
-          <div class="tiny-note">@${a.username} · ${new Date(a.created_at).toLocaleDateString()}</div>
+          <div class="tiny-note">@${a.username} · ${new Date(a.created_at).toLocaleString()}</div>
           <div style="margin-top:4px;">${roleBadge(a.role)} ${a.active ? '' : '<span class="badge badge-suspended">Deactivated</span>'}</div>
         </div>
         ${isFullAccess() && a.username !== motherAdmin.username ? `
