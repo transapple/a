@@ -139,6 +139,7 @@
   .badge-pending{background:var(--amber-tint);color:var(--amber);}
   .badge-deactivated{background:var(--slate-tint);color:var(--slate);}
   .badge-warn{background:var(--amber-tint);color:var(--amber);}
+  .badge-rejected{background:var(--red-tint);color:var(--red-dark);}
 
   /* ---- Tables ---- */
   .mini-table{width:100%;border-collapse:collapse;font-size:12.5px;}
@@ -196,6 +197,9 @@
   .gate-btn{width:100%;border:none;border-radius:var(--radius-sm);padding:14px 16px;font-size:14.5px;font-weight:800;cursor:pointer;background:var(--accent);color:#fff;box-shadow:0 8px 20px -6px rgba(52,87,213,.55);transition:filter .15s ease;}
   .gate-btn:hover{filter:brightness(1.08);}
   .gate-btn:active{filter:brightness(.94);}
+  .gate-btn-secondary{margin-top:10px;background:transparent;color:rgba(255,255,255,.65);box-shadow:none;border:1px solid rgba(255,255,255,.25);font-weight:600;}
+  .gate-btn-secondary:hover{filter:none;background:rgba(255,255,255,.06);}
+  .gate-btn-secondary:active{filter:none;background:rgba(255,255,255,.1);}
   .gate-instructions{margin-top:18px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:var(--radius-sm);padding:14px 16px;text-align:left;color:rgba(255,255,255,.85);font-size:13px;line-height:1.7;}
   .gate-instructions b{color:#fff;}
   .gate-instructions ol{margin:6px 0 0;padding-left:18px;}
@@ -259,6 +263,19 @@ function detectPlatform() {
 }
 
 let deferredInstallPrompt = null;
+let continuedInBrowser = false; // set once the user taps "Continue in browser", so a later beforeinstallprompt doesn't yank them back to the gate mid-session
+
+// Dismisses the install gate and boots the app normally, without installing.
+async function continueInBrowserNow() {
+  continuedInBrowser = true;
+  const el = document.getElementById("installGate");
+  el.style.display = "none";
+  el.innerHTML = "";
+  await tryRestoreMotherSession();
+  render();
+  const bootSplash = document.getElementById("bootSplash");
+  if (bootSplash) bootSplash.classList.add("is-hidden");
+}
 
 function installInstructionsHtml() {
   const { isIOS, isAndroid, isSafari } = detectPlatform();
@@ -301,6 +318,7 @@ function renderInstallGate(justInstalled) {
     <div class="gate-title">TransApple <span>Technologies</span></div>
     <div class="gate-desc">This is an installable app. Install it to your device to continue — it only takes a moment.</div>
     <button class="gate-btn" id="installNowBtn">Install App</button>
+    <button class="gate-btn gate-btn-secondary" id="continueBrowserBtn">Continue in browser</button>
     <div id="gateInstructionsSlot"></div>
   </div>`;
 
@@ -314,12 +332,13 @@ function renderInstallGate(justInstalled) {
       document.getElementById("gateInstructionsSlot").innerHTML = installInstructionsHtml();
     }
   };
+  document.getElementById("continueBrowserBtn").onclick = continueInBrowserNow;
 }
 
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  if (!isStandaloneDisplay()) renderInstallGate();
+  if (!isStandaloneDisplay() && !continuedInBrowser) renderInstallGate();
 });
 
 window.addEventListener("appinstalled", () => {
@@ -515,6 +534,8 @@ begin
     select * into school_row from schools where id = found_row.school_id;
     if school_row.status = 'pending' then
       raise exception 'Your school is still awaiting approval by TransApple. Please check back soon.';
+    elsif school_row.status = 'rejected' then
+      raise exception 'Your school''s registration was not approved. Contact TransApple for more information.';
     elsif school_row.status = 'suspended' then
       raise exception 'Your school''s account is suspended. Contact TransApple to resolve this.';
     elsif school_row.status = 'deactivated' then
@@ -652,6 +673,8 @@ begin
     select * into school_row from schools where id = found_row.school_id;
     if school_row.status = 'pending' then
       raise exception 'Your school is still awaiting approval by TransApple. Please check back soon.';
+    elsif school_row.status = 'rejected' then
+      raise exception 'Your school''s registration was not approved. Contact TransApple for more information.';
     elsif school_row.status = 'suspended' then
       raise exception 'Your school''s account is suspended. Contact TransApple to resolve this.';
     elsif school_row.status = 'deactivated' then
@@ -1228,7 +1251,7 @@ function subscriptionBadge(s) {
   return `<span class="badge badge-active">Active until ${s.subscription_expires_at}</span>`;
 }
 function statusBadge(status) {
-  const map = { pending:"badge-pending", active:"badge-active", suspended:"badge-suspended", deactivated:"badge-deactivated" };
+  const map = { pending:"badge-pending", active:"badge-active", suspended:"badge-suspended", deactivated:"badge-deactivated", rejected:"badge-rejected" };
   return `<span class="badge ${map[status]||'badge-deactivated'}">${status}</span>`;
 }
 
@@ -1348,7 +1371,7 @@ async function fetchFirstAdmins(schoolIds) {
   if (!ids.length) return {};
   let rows;
   try {
-    rows = await sb(`/rest/v1/profiles?${qs({school_id:`in.(${ids.join(",")})`, department:"eq.administration", "deleted_at":"is.null", select:"id,school_id,full_name,phone,email,whatsapp,created_at", order:"created_at.asc"})}`);
+    rows = await sb(`/rest/v1/profiles?${qs({school_id:`in.(${ids.join(",")})`, department:"eq.administration", "deleted_at":"is.null", select:"id,school_id,full_name,username,phone,email,whatsapp,created_at", order:"created_at.asc"})}`);
   } catch(e) { return {}; }
   const map = {};
   rows.forEach(r => { if (r.school_id && !map[r.school_id]) map[r.school_id] = r; });
@@ -1442,8 +1465,9 @@ async function getSchool(id) {
   const rows = await sb(`/rest/v1/schools?${qs({id:`eq.${id}`, select:"*"})}`);
   const school = rows[0] || null;
   if (school) {
-    const logos = await fetchSchoolLogos([school.id]);
+    const [logos, admins] = await Promise.all([fetchSchoolLogos([school.id]), fetchFirstAdmins([school.id])]);
     school.logo_url = logos[school.id] || null;
+    school.first_admin = admins[school.id] || null;
   }
   return school;
 }
@@ -1451,6 +1475,25 @@ async function approveSchool(id) {
   assertFullAccess();
   const res = await sb(`/rest/v1/schools?id=eq.${id}`, { method:"PATCH", body: JSON.stringify({ status:"active", approved_at: new Date().toISOString() }) });
   logAudit("approve_school", "school", id, null);
+  return res;
+}
+// Rejecting no longer deletes anything — it's just a status flip to
+// "rejected", same as suspend/deactivate. This avoids the old behavior
+// where a raw row DELETE would silently fail for any school that already
+// had a first-admin profile row (every self-registered school does), since
+// every school-scoped table references schools(id). Rejected schools land
+// in their own list on the Dashboard, where they can be restored back to
+// Pending or permanently deleted via the Danger Zone.
+async function rejectSchool(id) {
+  assertFullAccess();
+  const res = await sb(`/rest/v1/schools?id=eq.${id}`, { method:"PATCH", body: JSON.stringify({ status:"rejected" }) });
+  logAudit("reject_school", "school", id, null);
+  return res;
+}
+async function restoreSchool(id) {
+  assertFullAccess();
+  const res = await sb(`/rest/v1/schools?id=eq.${id}`, { method:"PATCH", body: JSON.stringify({ status:"pending" }) });
+  logAudit("restore_school", "school", id, null);
   return res;
 }
 async function savePlan(schoolId, { plan, billingCycle, amount, expiresAt }) {
@@ -1927,6 +1970,11 @@ async function renderDashboard() {
         <div class="section-title">Pending approval</div>
         <div id="pendingList"></div>
       </div>
+      <div class="card" id="rejectedCard" style="display:none;">
+        <div class="section-title" style="color:var(--red-dark);">Rejected schools</div>
+        <div class="tiny-note" style="margin-bottom:8px;">Rejected schools stay here — restore one back to Pending, or delete it completely.</div>
+        <div id="rejectedList"></div>
+      </div>
       <div class="card">
         <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
           <div class="section-title" style="margin:0;">Schools</div>
@@ -1975,7 +2023,7 @@ async function loadSchools() {
   try {
     const schools = await listSchools();
     if (exportBtn) exportBtn.onclick = () => exportSchoolsCSV(schools);
-    if (!schools.length) { listEl.innerHTML = `<div class="tiny-note">No schools registered yet.</div>`; if (pendingCard) pendingCard.style.display = "none"; return; }
+    if (!schools.length) { listEl.innerHTML = `<div class="tiny-note">No schools registered yet.</div>`; if (pendingCard) pendingCard.style.display = "none"; if (document.getElementById("rejectedCard")) document.getElementById("rejectedCard").style.display = "none"; return; }
 
     const pending = schools.filter(s => s.status === "pending");
     if (pendingCard && pendingList) {
@@ -1988,6 +2036,7 @@ async function loadSchools() {
               <div>
                 <div class="school-name">${s.name}</div>
                 <div class="tiny-note">${[s.motto, s.location].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleString()}</div>
+                <div class="tiny-note">${s.first_admin ? `Created by ${s.first_admin.full_name}${s.first_admin.username ? " (@"+s.first_admin.username+")" : ""}` : "No administrator account found"}</div>
               </div>
             </div>
             <div class="row">
@@ -1996,19 +2045,62 @@ async function loadSchools() {
             </div>
           </div>`).join("");
         pendingList.querySelectorAll("[data-approve]").forEach(btn => {
-          btn.onclick = async (e) => { e.stopPropagation(); await approveSchool(btn.dataset.approve); loadSchools(); };
+          btn.onclick = async (e) => {
+            e.stopPropagation();
+            try { await approveSchool(btn.dataset.approve); loadSchools(); }
+            catch(err) { alert(err.message); }
+          };
         });
         pendingList.querySelectorAll("[data-reject]").forEach(btn => {
           btn.onclick = async (e) => {
             e.stopPropagation();
-            if (!confirm("Reject and delete this school? Its Administrator account and any data already created will be orphaned — do this only for schools you don't want on the platform.")) return;
-            await deleteSchool(btn.dataset.reject); loadSchools();
+            if (!confirm("Reject this school? It will move to the Rejected list below, where you can restore it or delete it completely later.")) return;
+            try { await rejectSchool(btn.dataset.reject); loadSchools(); }
+            catch(err) { alert(err.message); }
           };
         });
       } else { pendingCard.style.display = "none"; }
     }
 
-    const rest = schools.filter(s => s.status !== "pending");
+    const rejectedCard = document.getElementById("rejectedCard");
+    const rejectedList = document.getElementById("rejectedList");
+    const rejected = schools.filter(s => s.status === "rejected");
+    if (rejectedCard && rejectedList) {
+      if (rejected.length) {
+        rejectedCard.style.display = "";
+        rejectedList.innerHTML = rejected.map(s => `
+          <div class="school-row">
+            <div class="row" style="gap:10px;">
+              ${schoolLogoHtml(s)}
+              <div>
+                <div class="school-name">${s.name}</div>
+                <div class="tiny-note">${[s.motto, s.location].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleString()}</div>
+                <div class="tiny-note">${s.first_admin ? `Created by ${s.first_admin.full_name}${s.first_admin.username ? " (@"+s.first_admin.username+")" : ""}` : "No administrator account found"}</div>
+              </div>
+            </div>
+            <div class="row">
+              <button class="btn btn-primary btn-sm" data-restore="${s.id}">Restore</button>
+              <button class="btn btn-ghost btn-sm" data-manage="${s.id}">Manage</button>
+            </div>
+          </div>`).join("");
+        rejectedList.querySelectorAll("[data-restore]").forEach(btn => {
+          btn.onclick = async (e) => {
+            e.stopPropagation();
+            if (!confirm("Restore this school to Pending approval?")) return;
+            try { await restoreSchool(btn.dataset.restore); loadSchools(); }
+            catch(err) { alert(err.message); }
+          };
+        });
+        rejectedList.querySelectorAll("[data-manage]").forEach(btn => {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            currentSchoolId = btn.dataset.manage; schoolSubTab = "danger"; view = "schoolDetail"; render();
+          };
+        });
+      } else { rejectedCard.style.display = "none"; }
+    }
+
+    const rest = schools.filter(s => s.status !== "pending" && s.status !== "rejected");
     if (!rest.length) { listEl.innerHTML = `<div class="tiny-note">No approved schools yet.</div>`; return; }
     const restIds = new Set(rest.map(s => s.id));
     Array.from(selectedSchoolIds).forEach(id => { if (!restIds.has(id)) selectedSchoolIds.delete(id); });
@@ -2016,7 +2108,7 @@ async function loadSchools() {
     const adminContact = (s) => {
       const a = s.first_admin;
       if (!a) return "—";
-      const bits = [a.phone, a.email].filter(Boolean);
+      const bits = [a.username ? "@"+a.username : null, a.phone, a.email].filter(Boolean);
       return bits.length ? bits.join(" · ") : "—";
     };
     listEl.innerHTML = `<div class="table-scroll"><table class="mini-table schools-table">
@@ -2288,7 +2380,10 @@ function planDefaultFeatures(plan) {
 function statusActionsHtml(s) {
   if (s.status === "pending") return `
     <button class="btn btn-primary" data-action="approve">Approve school</button>
-    <button class="btn btn-danger" data-action="reject">Reject &amp; delete</button>`;
+    <button class="btn btn-danger" data-action="reject">Reject</button>`;
+  if (s.status === "rejected") return `
+    <button class="btn btn-primary" data-action="restore">Restore to pending</button>
+    <button class="btn btn-danger" data-action="delete">Delete completely</button>`;
   // Suspend and Deactivate are independent toggles, not a shared "Reactivate":
   // each button reflects and flips just its own half of the status, so an
   // admin can tell at a glance which state a school is in and undo just that.
@@ -2320,6 +2415,7 @@ async function renderSchoolDetail() {
               <div class="school-name" style="font-size:17px;">${s.name}</div>
               <div class="tiny-note">${[s.motto, s.location, s.size_range].filter(Boolean).join(" · ") || "No profile details yet"}</div>
               <div class="tiny-note">Registered ${new Date(s.created_at).toLocaleString()}${s.approved_at ? " · Approved " + new Date(s.approved_at).toLocaleString() : ""}</div>
+              <div class="tiny-note">${s.first_admin ? `Created by <strong>${s.first_admin.full_name}</strong>${s.first_admin.username ? ` (@${s.first_admin.username})` : ""}${[s.first_admin.phone, s.first_admin.email, s.first_admin.whatsapp].filter(Boolean).length ? " · " + [s.first_admin.phone, s.first_admin.email, s.first_admin.whatsapp].filter(Boolean).join(" · ") : ""}` : "No administrator account found for this school"}</div>
             </div>
           </div>
           <div>${statusBadge(s.status)}</div>
@@ -2344,7 +2440,11 @@ async function renderSchoolDetail() {
       const msg = document.getElementById("statusMsg"); msg.innerHTML = "";
       try {
         if (action === "approve") { await approveSchool(s.id); }
-        else if (action === "reject" || action === "delete") {
+        else if (action === "reject") {
+          await rejectSchool(s.id);
+        } else if (action === "restore") {
+          await restoreSchool(s.id);
+        } else if (action === "delete") {
           // Deleting a school that has ANY data (even a self-registered
           // school's first admin account) fails as a plain row delete, since
           // every school-scoped table references schools(id) — that's what
@@ -2692,7 +2792,7 @@ async function renderAnalytics() {
       countRows("profiles", { deleted_at:"is.null", suspended_at:"is.null" }),
       countRows("profiles", { deleted_at:"is.null", last_login_at:`gte.${new Date(Date.now()-7*86400000).toISOString()}` }),
     ]);
-    const byStatus = { active:0, pending:0, suspended:0, deactivated:0 };
+    const byStatus = { active:0, pending:0, suspended:0, deactivated:0, rejected:0 };
     schools.forEach(s => { byStatus[s.status] = (byStatus[s.status]||0) + 1; });
     statsCard.innerHTML = `
       <div class="section-title">Platform totals</div>
@@ -2710,6 +2810,7 @@ async function renderAnalytics() {
         <span class="badge badge-pending">${byStatus.pending} pending</span>
         <span class="badge badge-suspended">${byStatus.suspended} suspended</span>
         <span class="badge badge-deactivated">${byStatus.deactivated} deactivated</span>
+        <span class="badge badge-rejected">${byStatus.rejected} rejected</span>
       </div>`;
   } catch(e) { statsCard.innerHTML = `<div class="err">${e.message}</div>`; }
 
@@ -2979,7 +3080,7 @@ async function renderComms() {
   const annAll = document.getElementById("annAll");
   const picker = document.getElementById("annSchoolPicker");
   let allSchools = [];
-  try { allSchools = (await listSchools()).filter(s => s.status !== "pending"); } catch(e) {}
+  try { allSchools = (await listSchools()).filter(s => s.status !== "pending" && s.status !== "rejected"); } catch(e) {}
   function renderPicker() {
     picker.style.display = annAll.checked ? "none" : "block";
     if (!annAll.checked) {
@@ -3405,8 +3506,8 @@ document.addEventListener("focusin", (e) => {
 
 (async () => {
   // Not installed / not launched as an app → show the full-screen install
-  // gate only. No "continue in browser" escape hatch, per spec.
-  if (!isStandaloneDisplay()) {
+  // gate, with a "Continue in browser" button to skip installing.
+  if (!isStandaloneDisplay() && !continuedInBrowser) {
     renderInstallGate();
     return;
   }
