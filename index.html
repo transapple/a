@@ -2443,19 +2443,24 @@ const METHOD_OPTIONS = [["cash","Cash"],["bank","Bank transfer"],["mobile_money"
    they're the sections a school sees in its sidebar/bottom nav. Home,
    Account, Settings and Trash are never listed here: they're core to every
    school's own account and can't be switched off from here.
+   One exception: "parent_portal" isn't a nav tab in the staff-side school
+   app at all — it gates the entire separate parent-facing app shell. It
+   uses the exact same schools.features jsonb column and on/off mechanics,
+   just checked at a different point in the school app's code.
    schools.features is a jsonb map like {"fees": true, "exams": false, ...}.
    A school app treats a missing key as "on", so an empty/unset features
    column (the default for every existing school) changes nothing until a
    mother admin actually opens this panel and saves. */
 const FEATURE_MODULES = [
-  { id: "health",     label: "School Health" },
-  { id: "students",   label: "Students" },
-  { id: "teachers",   label: "Staff" },
-  { id: "attendance", label: "Attendance" },
-  { id: "fees",       label: "Fees" },
-  { id: "exams",      label: "Exams" },
-  { id: "academic",   label: "Setup (terms/classes/subjects)" },
-  { id: "comms",      label: "Comms (announcements/meetings)" },
+  { id: "health",         label: "School Health" },
+  { id: "students",       label: "Students" },
+  { id: "teachers",       label: "Staff" },
+  { id: "attendance",     label: "Attendance" },
+  { id: "fees",           label: "Fees" },
+  { id: "exams",          label: "Exams" },
+  { id: "academic",       label: "Setup (terms/classes/subjects)" },
+  { id: "comms",          label: "Comms (announcements/meetings)" },
+  { id: "parent_portal",  label: "Parent Portal" },
 ];
 // What a fresh plan turns on by default. Each tier is a strict superset of
 // the one below it, so Premium is the only plan with every module on — as
@@ -2466,15 +2471,16 @@ const FEATURE_MODULES = [
 // afterward regardless of plan — these are just starting points.
 const PLAN_FEATURE_DEFAULTS = {
   // Trial (Free): just enough to evaluate the core workflow — enrollment,
-  // staff records, attendance.
-  Trial:    { students:true, teachers:true, attendance:true, health:false, fees:false, exams:false, academic:false, comms:false },
+  // staff records, attendance. No Parent Portal on a free trial.
+  Trial:    { students:true, teachers:true, attendance:true, health:false, fees:false, exams:false, academic:false, comms:false, parent_portal:false },
   // Basic (Paid): adds the day-to-day essentials — fees, term/class setup,
-  // parent comms.
-  Basic:    { students:true, teachers:true, attendance:true, health:false, fees:true,  exams:false, academic:true,  comms:true  },
-  // Standard (Paid): adds exams/report cards on top of Basic.
-  Standard: { students:true, teachers:true, attendance:true, health:false, fees:true,  exams:true,  academic:true,  comms:true  },
-  // Premium (Paid): full access to every module, including School Health.
-  Premium:  { students:true, teachers:true, attendance:true, health:true,  fees:true,  exams:true,  academic:true,  comms:true  },
+  // parent comms. Parent Portal is held back for Standard+ (it's the module
+  // most likely to drive an upgrade once a school sees it in the demo).
+  Basic:    { students:true, teachers:true, attendance:true, health:false, fees:true,  exams:false, academic:true,  comms:true,  parent_portal:false },
+  // Standard (Paid): adds exams/report cards on top of Basic, plus Parent Portal.
+  Standard: { students:true, teachers:true, attendance:true, health:false, fees:true,  exams:true,  academic:true,  comms:true,  parent_portal:true  },
+  // Premium (Paid): full access to every module, including School Health and Parent Portal.
+  Premium:  { students:true, teachers:true, attendance:true, health:true,  fees:true,  exams:true,  academic:true,  comms:true,  parent_portal:true  },
 };
 function planDefaultFeatures(plan) {
   return PLAN_FEATURE_DEFAULTS[plan] || null; // null for an unrecognized/no plan — caller decides fallback
@@ -2656,7 +2662,7 @@ function renderSchoolFeaturesTab(s) {
   mount.innerHTML = `
     <div class="card">
       <div class="section-title">Features &amp; modules</div>
-      <div class="tiny-note" style="margin-bottom:10px;">Choose which sections this school can see and use. Students, Fees and Comms also control the matching tab in parents' own app (My Children, Fees, Notifications) — everything else here is staff-only. Changes take effect automatically — usually within a minute, or as soon as they reopen the app — no re-login needed.</div>
+      <div class="tiny-note" style="margin-bottom:10px;">Choose which sections this school can see and use. Students, Fees and Comms also control the matching tab inside the Parent Portal (My Children, Fees, Notifications) once it's on — everything else here is staff-only. "Parent Portal" is the master switch for parent login itself: turn it off and every parent for this school is shown a friendly "not available" screen instead of the portal, no matter what their individual tabs are set to. Changes take effect automatically — usually within a minute, or as soon as they reopen the app — no re-login needed.</div>
       ${s.plan ? `<div class="tiny-note" style="margin-bottom:10px;">Current plan: <strong>${s.plan}</strong>${PLAN_DESCRIPTIONS[s.plan] ? ` — ${PLAN_DESCRIPTIONS[s.plan]}` : ""}</div>` : ""}
       <div id="featuresMsg"></div>
       <div class="row" style="margin-bottom:10px;flex-wrap:wrap;">
