@@ -480,7 +480,7 @@ create function register_school(
   p_admin_password text, p_admin_pin text default null, p_admin_photo_url text default null
 ) returns profiles
 language plpgsql security definer as $register_school$
-declare new_school schools; new_admin profiles; candidate_code text; base_code text;
+declare new_school schools; new_admin profiles; candidate_code text;
 begin
   if p_school_name is null or trim(p_school_name) = '' then
     raise exception 'School name is required.';
@@ -501,10 +501,8 @@ begin
     raise exception 'Administrator password must be at least 6 characters.';
   end if;
 
-  base_code := upper(substr(regexp_replace(coalesce(p_school_name,'SCHOOL'), '[^A-Za-z0-9]+', '', 'g'), 1, 12));
-  if base_code = '' then base_code := 'SCHOOL'; end if;
   loop
-    candidate_code := base_code || '_' || upper(substr(md5(random()::text), 1, 5));
+    candidate_code := 'TATNOVA' || lpad(floor(random() * 10000000)::text, 7, '0');
     exit when not exists (select 1 from schools where school_code = candidate_code);
   end loop;
 
@@ -1082,7 +1080,7 @@ create function migrate_school_format(
   p_village text default null, p_subcounty text default null, p_district text default null,
   p_size_range text default null, p_password text default null
 ) returns schools language plpgsql security definer as $$
-declare actor mother_admins; s schools; base_code text; candidate_code text;
+declare actor mother_admins; s schools; candidate_code text;
 begin
   select * into actor from mother_admins where username = p_actor_username;
   if actor.id is null or crypt(p_actor_password, actor.password_hash) <> actor.password_hash then
@@ -1099,7 +1097,7 @@ begin
 
   -- School ID (code): only touch it if it's currently missing. If the
   -- caller didn't supply one either, generate one the same way
-  -- register_school() does — name-derived prefix + random suffix, retried
+  -- register_school() does — TATNOVA plus 7 random digits, retried
   -- until unique.
   if s.school_code is null or trim(s.school_code) = '' then
     if p_school_code is not null and trim(p_school_code) <> '' then
@@ -1111,10 +1109,8 @@ begin
       end if;
       update schools set school_code = p_school_code where id = p_school_id;
     else
-      base_code := upper(substr(regexp_replace(coalesce(s.name,'SCHOOL'), '[^A-Za-z0-9]+', '', 'g'), 1, 12));
-      if base_code = '' then base_code := 'SCHOOL'; end if;
       loop
-        candidate_code := base_code || '_' || upper(substr(md5(random()::text), 1, 5));
+        candidate_code := 'TATNOVA' || lpad(floor(random() * 10000000)::text, 7, '0');
         exit when not exists (select 1 from schools where school_code = candidate_code);
       end loop;
       update schools set school_code = candidate_code where id = p_school_id;
@@ -1321,7 +1317,7 @@ create function complete_school_upgrade(
   p_village text default null, p_subcounty text default null, p_district text default null,
   p_size_range text default null, p_password text default null
 ) returns schools language plpgsql security definer as $$
-declare actor profiles; s schools; base_code text; candidate_code text;
+declare actor profiles; s schools; candidate_code text;
 begin
   select * into actor from profiles where username = p_actor_username;
   if actor.id is null or actor.password_hash is null or crypt(p_actor_password, actor.password_hash) <> actor.password_hash then
@@ -1355,10 +1351,8 @@ begin
       end if;
       update schools set school_code = p_school_code where id = p_school_id;
     else
-      base_code := upper(substr(regexp_replace(coalesce(s.name,'SCHOOL'), '[^A-Za-z0-9]+', '', 'g'), 1, 12));
-      if base_code = '' then base_code := 'SCHOOL'; end if;
       loop
-        candidate_code := base_code || '_' || upper(substr(md5(random()::text), 1, 5));
+        candidate_code := 'TATNOVA' || lpad(floor(random() * 10000000)::text, 7, '0');
         exit when not exists (select 1 from schools where school_code = candidate_code);
       end loop;
       update schools set school_code = candidate_code where id = p_school_id;
