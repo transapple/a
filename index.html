@@ -464,17 +464,23 @@ create policy "Mother app can manage schools" on schools for all using (true) wi
 const MOTHER_SUITE_SQL = `-- 1) APPROVAL WORKFLOW --------------------------------------------
 alter table schools add column if not exists approved_at timestamptz;
 
--- New self-registrations now start 'pending' instead of 'active'.
+-- New self-registrations now start 'pending' instead of 'active'. Signature
+-- kept in sync with the main app's register_school() (village/subcounty/
+-- district instead of one location field, the admin's profile photo, and the
+-- auto-generated school_code / School ID) — update both together if either
+-- changes.
 drop function if exists register_school(text,text,text,text,text,text,text,text,text,text,text,text,text);
+drop function if exists register_school(text,text,text,text,text,text,text,text,text,text,text,text,text,text,text);
 create function register_school(
-  p_school_name text, p_school_motto text, p_school_location text,
+  p_school_name text, p_school_motto text,
+  p_school_village text, p_school_subcounty text, p_school_district text,
   p_school_password text, p_school_size_range text,
   p_admin_full_name text, p_admin_username text, p_admin_phone text,
-  p_admin_whatsapp text, p_admin_email text, p_admin_location text,
-  p_admin_password text, p_admin_pin text default null
+  p_admin_whatsapp text, p_admin_email text,
+  p_admin_password text, p_admin_pin text default null, p_admin_photo_url text default null
 ) returns profiles
 language plpgsql security definer as $register_school$
-declare new_school schools; new_admin profiles;
+declare new_school schools; new_admin profiles; candidate_code text; base_code text;
 begin
   if p_school_name is null or trim(p_school_name) = '' then
     raise exception 'School name is required.';
@@ -494,24 +500,33 @@ begin
   if p_admin_password is null or length(p_admin_password) < 6 then
     raise exception 'Administrator password must be at least 6 characters.';
   end if;
-  insert into schools (name, motto, location, size_range, password_hash, status)
+
+  base_code := upper(substr(regexp_replace(coalesce(p_school_name,'SCHOOL'), '[^A-Za-z0-9]+', '', 'g'), 1, 12));
+  if base_code = '' then base_code := 'SCHOOL'; end if;
+  loop
+    candidate_code := base_code || '_' || upper(substr(md5(random()::text), 1, 5));
+    exit when not exists (select 1 from schools where school_code = candidate_code);
+  end loop;
+
+  insert into schools (name, motto, village, subcounty, district, size_range, password_hash, status, school_code)
   values (
-    trim(p_school_name), nullif(trim(p_school_motto),''), nullif(trim(p_school_location),''),
-    nullif(p_school_size_range,''), crypt(p_school_password, gen_salt('bf')), 'pending'
+    trim(p_school_name), nullif(trim(p_school_motto),''),
+    nullif(trim(p_school_village),''), nullif(trim(p_school_subcounty),''), nullif(trim(p_school_district),''),
+    nullif(p_school_size_range,''), crypt(p_school_password, gen_salt('bf')), 'pending', candidate_code
   ) returning * into new_school;
   insert into profiles (
-    full_name, username, department, phone, whatsapp, email, location,
-    pin, password_hash, role, school_id
+    full_name, username, department, phone, whatsapp, email,
+    pin, password_hash, role, photo_url, school_id
   ) values (
     trim(p_admin_full_name), p_admin_username, 'administration',
-    nullif(p_admin_phone,''), nullif(p_admin_whatsapp,''), nullif(p_admin_email,''), nullif(p_admin_location,''),
-    nullif(p_admin_pin,''), crypt(p_admin_password, gen_salt('bf')), 'staff', new_school.id
+    nullif(p_admin_phone,''), nullif(p_admin_whatsapp,''), nullif(p_admin_email,''),
+    nullif(p_admin_pin,''), crypt(p_admin_password, gen_salt('bf')), 'staff', p_admin_photo_url, new_school.id
   ) returning * into new_admin;
   new_admin.password_hash := null;
   return new_admin;
 end;
 $register_school$;
-grant execute on function register_school(text,text,text,text,text,text,text,text,text,text,text,text,text) to anon, authenticated;
+grant execute on function register_school(text,text,text,text,text,text,text,text,text,text,text,text,text,text,text) to anon, authenticated;
 
 -- Login now also blocks accounts whose school is pending/suspended/deactivated.
 drop function if exists verify_login(text, text);
@@ -1537,6 +1552,11 @@ function downloadCSV(filename, csvText) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+// Schools now store location as village/subcounty/district (see register_school())
+// instead of one free-text field — this joins them for display/export.
+function schoolLocationLabel(s) {
+  return [s.village, s.subcounty, s.district].filter(Boolean).join(", ") || (s.location || "");
+}
 function exportSchoolsCSV(schools) {
   const csv = toCSV(schools, [
     { label:"Name", get:s=>s.name },
@@ -1545,7 +1565,7 @@ function exportSchoolsCSV(schools) {
     { label:"Billing cycle", get:s=>s.billing_cycle||"" },
     { label:"Subscription amount", get:s=>s.subscription_amount??"" },
     { label:"Expires on", get:s=>s.subscription_expires_at||"" },
-    { label:"Location", get:s=>s.location||"" },
+    { label:"Location", get:s=>schoolLocationLabel(s) },
     { label:"Registered", get:s=>s.created_at ? new Date(s.created_at).toLocaleString() : "" },
   ]);
   downloadCSV(`nova-schools-${new Date().toISOString().slice(0,10)}.csv`, csv);
@@ -2134,7 +2154,7 @@ async function loadSchools() {
               ${schoolLogoHtml(s)}
               <div>
                 <div class="school-name">${s.name}</div>
-                <div class="tiny-note">${[s.motto, s.location].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleString()}</div>
+                <div class="tiny-note">${[s.motto, schoolLocationLabel(s)].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleString()}</div>
                 <div class="tiny-note">${s.first_admin ? `Created by ${s.first_admin.full_name}${s.first_admin.username ? " (@"+s.first_admin.username+")" : ""}` : "No administrator account found"}</div>
               </div>
             </div>
@@ -2173,7 +2193,7 @@ async function loadSchools() {
               ${schoolLogoHtml(s)}
               <div>
                 <div class="school-name">${s.name}</div>
-                <div class="tiny-note">${[s.motto, s.location].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleString()}</div>
+                <div class="tiny-note">${[s.motto, schoolLocationLabel(s)].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleString()}</div>
                 <div class="tiny-note">${s.first_admin ? `Created by ${s.first_admin.full_name}${s.first_admin.username ? " (@"+s.first_admin.username+")" : ""}` : "No administrator account found"}</div>
               </div>
             </div>
@@ -2227,7 +2247,7 @@ async function loadSchools() {
             <td onclick="event.stopPropagation();"><input type="checkbox" class="schoolSelect" data-id="${s.id}" ${selectedSchoolIds.has(s.id)?'checked':''} style="width:16px;height:16px;" /></td>
             <td>${schoolLogoHtml(s)}</td>
             <td class="name-cell"><div class="school-name">${s.name}</div></td>
-            <td>${s.location || "—"}</td>
+            <td>${schoolLocationLabel(s) || "—"}</td>
             <td>${sizeLabel(s)}</td>
             <td class="name-cell">${s.first_admin ? s.first_admin.full_name : "—"}</td>
             <td class="contact-cell">${adminContact(s)}</td>
@@ -2522,7 +2542,8 @@ async function renderSchoolDetail() {
             ${schoolLogoHtml(s, "lg")}
             <div>
               <div class="school-name" style="font-size:17px;">${s.name}</div>
-              <div class="tiny-note">${[s.motto, s.location, s.size_range].filter(Boolean).join(" · ") || "No profile details yet"}</div>
+              ${s.school_code ? `<div class="tiny-note" style="font-family:monospace;font-weight:700;">School ID: ${s.school_code}</div>` : ""}
+              <div class="tiny-note">${[s.motto, schoolLocationLabel(s), s.size_range].filter(Boolean).join(" · ") || "No profile details yet"}</div>
               <div class="tiny-note">Registered ${new Date(s.created_at).toLocaleString()}${s.approved_at ? " · Approved " + new Date(s.approved_at).toLocaleString() : ""}</div>
               <div class="tiny-note">${s.first_admin ? `Created by <strong>${s.first_admin.full_name}</strong>${s.first_admin.username ? ` (@${s.first_admin.username})` : ""}${[s.first_admin.phone, s.first_admin.email, s.first_admin.whatsapp].filter(Boolean).length ? " · " + [s.first_admin.phone, s.first_admin.email, s.first_admin.whatsapp].filter(Boolean).join(" · ") : ""}` : "No administrator account found for this school"}</div>
             </div>
