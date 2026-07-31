@@ -992,8 +992,22 @@ begin
     'students','teachers','profiles'
   ]
   loop
-    if to_regclass(t) is not null then
-      execute format('delete from %I where school_id = %L', t, p_school_id);
+    if to_regclass(t) is not null
+       and exists (
+         select 1 from information_schema.columns
+         where table_schema = 'public' and table_name = t and column_name = 'school_id'
+       )
+    then
+      if t = 'profiles' then
+        -- Keep administration-department accounts so the school's admin can
+        -- still log back in after a purge and rebuild from a clean slate.
+        execute format(
+          'delete from %I where school_id = %L and department is distinct from %L',
+          t, p_school_id, 'administration'
+        );
+      else
+        execute format('delete from %I where school_id = %L', t, p_school_id);
+      end if;
     end if;
   end loop;
 
@@ -1021,6 +1035,72 @@ begin
 end;
 $$;
 grant execute on function delete_school_completely(text,text,uuid) to anon, authenticated;`;
+
+/* ---------------- SCHOOL ACTIVITY UPGRADE (run once, after MOTHER_OPS_SQL) ----------------
+   Adds a per-school login activity log — every attempt against that school's
+   own accounts (profiles), success or failure — so a school's "Activity" tab
+   can show who logged in, when, how often, and any failed/incorrect attempts.
+   This is the school-scoped counterpart to mother_login_log above, which only
+   covers logins to THIS mother app, not to the school app itself. */
+const SCHOOL_ACTIVITY_SQL = `create table if not exists school_login_log (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid references schools(id) on delete cascade,
+  username text not null,
+  success boolean not null,
+  created_at timestamptz not null default now()
+);
+alter table school_login_log enable row level security;
+drop policy if exists "Anyone can log school logins" on school_login_log;
+create policy "Anyone can log school logins" on school_login_log for insert with check (true);
+drop policy if exists "Mother app can read school login log" on school_login_log;
+create policy "Mother app can read school login log" on school_login_log for select using (true);
+drop policy if exists "Mother app can delete school login log" on school_login_log;
+create policy "Mother app can delete school login log" on school_login_log for delete using (true);
+
+-- verify_login now also records every attempt (success or failure) to
+-- school_login_log, on top of everything it already did.
+drop function if exists verify_login(text, text);
+create function verify_login(p_username text, p_password text) returns profiles
+language plpgsql security definer as $verify_login$
+declare found_row profiles; school_row schools;
+begin
+  select * into found_row from profiles where username = p_username;
+  if found_row.id is null or found_row.password_hash is null
+     or crypt(p_password, found_row.password_hash) <> found_row.password_hash then
+    insert into school_login_log (school_id, username, success) values (found_row.school_id, p_username, false);
+    raise exception 'Incorrect username or password.';
+  end if;
+  if found_row.deleted_at is not null then
+    insert into school_login_log (school_id, username, success) values (found_row.school_id, p_username, false);
+    raise exception 'This account has been deleted. Contact Administration.';
+  end if;
+  if found_row.suspended_at is not null then
+    insert into school_login_log (school_id, username, success) values (found_row.school_id, p_username, false);
+    raise exception 'This account is suspended. Contact Administration.';
+  end if;
+  if found_row.school_id is not null then
+    select * into school_row from schools where id = found_row.school_id;
+    if school_row.status = 'pending' then
+      insert into school_login_log (school_id, username, success) values (found_row.school_id, p_username, false);
+      raise exception 'Your school is still awaiting approval by TransApple. Please check back soon.';
+    elsif school_row.status = 'rejected' then
+      insert into school_login_log (school_id, username, success) values (found_row.school_id, p_username, false);
+      raise exception 'Your school''s registration was not approved. Contact TransApple for more information.';
+    elsif school_row.status = 'suspended' then
+      insert into school_login_log (school_id, username, success) values (found_row.school_id, p_username, false);
+      raise exception 'Your school''s account is suspended. Contact TransApple to resolve this.';
+    elsif school_row.status = 'deactivated' then
+      insert into school_login_log (school_id, username, success) values (found_row.school_id, p_username, false);
+      raise exception 'Your school''s account has been deactivated. Contact TransApple for help.';
+    end if;
+  end if;
+  update profiles set last_login_at = now() where id = found_row.id;
+  insert into school_login_log (school_id, username, success) values (found_row.school_id, p_username, true);
+  found_row.password_hash := null;
+  return found_row;
+end;
+$verify_login$;
+grant execute on function verify_login(text,text) to anon, authenticated;`;
 
 /* ---------------- RISK & RETENTION UPGRADE (run once, after MOTHER_OPS_SQL) ----------------
    Adds: a per-school engagement view (last login, active users — used to flag
@@ -1234,7 +1314,9 @@ let pendingAnnounceTargets = null; // school ids handed off from Dashboard bulk 
 const DEPT_LABELS = { administration:"Administrators", academic:"Academic", finance:"Finance" };
 let loginActivityItems = [];
 let loginActivityShowAll = false;
-const SCHOOL_TABS = [["subscription","Subscription","subscription"],["features","Features & Modules","features"],["admins","Administrators","admins"],["danger","Danger Zone","danger",true]];
+let schoolActivityItems = []; // login attempts for the currently open school's Activity tab
+let schoolActivityShowAll = false;
+const SCHOOL_TABS = [["subscription","Subscription","subscription"],["features","Features & Modules","features"],["admins","Administrators","admins"],["activity","Activity","monitoring"],["contact","Contact","comms"],["danger","Danger Zone","danger",true]];
 const SETTINGS_TABS = [["account","Account","account"],["plans","Plans & Features","subscription"],["admins","Admins","admins"],["database","Database","database"]];
 
 function daysUntil(dateStr) {
@@ -1334,6 +1416,14 @@ async function clearLoginLog() {
   assertFullAccess();
   await sb(`/rest/v1/mother_login_log?created_at=lte.${encodeURIComponent(new Date().toISOString())}`, { method:"DELETE" });
   logAudit("clear_login_log", "mother_login_log", null, null);
+}
+async function listSchoolLoginLog(schoolId, limit) {
+  return sb(`/rest/v1/school_login_log?${qs({select:"*", school_id:`eq.${schoolId}`, order:"created_at.desc", limit: limit || 500})}`);
+}
+async function clearSchoolLoginLog(schoolId) {
+  assertFullAccess();
+  await sb(`/rest/v1/school_login_log?${qs({school_id:`eq.${schoolId}`})}`, { method:"DELETE" });
+  logAudit("clear_school_login_log", "school", schoolId, null);
 }
 async function listMotherAdmins() {
   const rows = await sb(`/rest/v1/rpc/list_mother_admins`, { method:"POST", body: JSON.stringify({}) });
@@ -1588,6 +1678,15 @@ async function deleteAnnouncement(id) {
 }
 async function listSupportRequests(status) {
   return sb(`/rest/v1/school_support_requests?${qs({select:"*,schools(name)", order:"updated_at.desc", limit:50, status: status ? `eq.${status}` : undefined})}`);
+}
+// Announcements whose target_school_ids array contains this school — covers
+// both messages sent to it alone (from the Contact tab) and any bulk
+// announcement from the Comms tab that happened to include it.
+async function listAnnouncementsForSchool(schoolId) {
+  return sb(`/rest/v1/mother_announcements?${qs({select:"*", target_school_ids:`cs.{${schoolId}}`, order:"created_at.desc", limit:20})}`);
+}
+async function listSupportRequestsForSchool(schoolId) {
+  return sb(`/rest/v1/school_support_requests?${qs({select:"*", school_id:`eq.${schoolId}`, order:"updated_at.desc", limit:50})}`);
 }
 async function listSupportThread(requestId) {
   return sb(`/rest/v1/school_support_messages?${qs({select:"*", request_id:`eq.${requestId}`, order:"created_at.asc"})}`);
@@ -2315,6 +2414,10 @@ function renderSettingsDatabaseTab() {
         <p class="tiny-note">If the Danger Zone on a school's page errors out, run this once in Supabase → SQL Editor.</p>
         <pre>${SCHOOL_DANGER_ZONE_SQL}</pre>
       </details>
+      <details style="margin-top:8px;"><summary>Upgrade: per-school login activity log</summary>
+        <p class="tiny-note">If the "Activity" tab on a school's page errors out, run this once in Supabase → SQL Editor.</p>
+        <pre>${SCHOOL_ACTIVITY_SQL}</pre>
+      </details>
       <details style="margin-top:8px;"><summary>Upgrade: Risk &amp; Retention (engagement metrics)</summary>
         <p class="tiny-note">If the Risk &amp; Retention tab errors out, run this once in Supabase → SQL Editor.</p>
         <pre>${RISK_ALERTS_SQL}</pre>
@@ -2470,6 +2573,8 @@ async function renderSchoolDetail() {
 
   if (schoolSubTab === "features") renderSchoolFeaturesTab(s);
   else if (schoolSubTab === "admins") renderSchoolAdminsTab(s);
+  else if (schoolSubTab === "activity") renderSchoolActivityTab(s);
+  else if (schoolSubTab === "contact") renderSchoolContactTab(s);
   else if (schoolSubTab === "danger") renderSchoolDangerTab(s);
   else renderSchoolSubscriptionTab(s);
 }
@@ -2627,6 +2732,218 @@ function renderSchoolAdminsTab(s) {
       </div>
     </div>`;
   loadAdmins(s.id);
+}
+
+function renderSchoolActivityTab(s) {
+  schoolActivityShowAll = false;
+  const mount = document.getElementById("schoolTabContent");
+  mount.innerHTML = `
+    <div class="card" id="activityStatsCard"><div class="tiny-note">Loading…</div></div>
+    <div class="card">
+      <div class="section-title">Login activity</div>
+      <div class="tiny-note" style="margin-bottom:10px;">Every login attempt against this school's accounts — successful and failed — most recent first. Repeated failures against one username within 15 minutes are flagged as suspicious.</div>
+      <div id="schoolActivityList" class="tiny-note">Loading…</div>
+    </div>
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">Database setup</div>
+      <details><summary>Upgrade: per-school login activity log</summary>
+        <p class="tiny-note">If this tab errors out, run this once in Supabase → SQL Editor.</p>
+        <pre>${SCHOOL_ACTIVITY_SQL}</pre>
+      </details>
+    </div>`;
+  loadSchoolActivity(s.id);
+}
+
+async function loadSchoolActivity(schoolId) {
+  const statsEl = document.getElementById("activityStatsCard");
+  const listEl = document.getElementById("schoolActivityList");
+  try {
+    schoolActivityItems = await listSchoolLoginLog(schoolId, 500);
+    const successes = schoolActivityItems.filter(r => r.success);
+    const failures = schoolActivityItems.filter(r => !r.success);
+    const uniqueUsers = new Set(successes.map(r => r.username)).size;
+    const last7 = successes.filter(r => (Date.now() - new Date(r.created_at).getTime()) < 7*86400000).length;
+    const lastLogin = successes[0]; // newest-first
+    statsEl.innerHTML = `
+      <div class="section-title">Login summary</div>
+      <div class="grid2">
+        <div><div style="font-size:22px;font-weight:800;">${successes.length}</div><div class="subtle">Successful logins</div></div>
+        <div><div style="font-size:22px;font-weight:800;">${failures.length}</div><div class="subtle">Failed attempts</div></div>
+        <div><div style="font-size:22px;font-weight:800;">${uniqueUsers}</div><div class="subtle">Distinct accounts logged in</div></div>
+        <div><div style="font-size:22px;font-weight:800;">${last7}</div><div class="subtle">Logins, last 7 days</div></div>
+      </div>
+      <div class="tiny-note" style="margin-top:8px;">${lastLogin ? `Last successful login: <strong>${lastLogin.username}</strong> · ${new Date(lastLogin.created_at).toLocaleString()}` : "No successful logins recorded yet."}</div>`;
+    renderSchoolActivityList(schoolId);
+  } catch(e) {
+    statsEl.innerHTML = `<div class="err">${e.message}</div>`;
+    if (listEl) listEl.innerHTML = "";
+  }
+}
+
+function renderSchoolActivityList(schoolId) {
+  const el = document.getElementById("schoolActivityList");
+  if (!schoolActivityItems.length) { el.innerHTML = `<div class="empty">No login activity recorded yet.</div>`; return; }
+  const now = Date.now();
+  const recentFailuresByUser = {};
+  schoolActivityItems.forEach(r => {
+    if (!r.success && (now - new Date(r.created_at).getTime()) < 15*60000) {
+      recentFailuresByUser[r.username] = (recentFailuresByUser[r.username]||0) + 1;
+    }
+  });
+  const shown = schoolActivityShowAll ? schoolActivityItems : schoolActivityItems.slice(0, LOG_PAGE_SIZE);
+  el.innerHTML = `
+    <div class="table-scroll"><table class="mini-table"><thead><tr><th>When</th><th>Username</th><th>Result</th></tr></thead><tbody>
+      ${shown.map(r => `<tr>
+        <td>${new Date(r.created_at).toLocaleString()}</td>
+        <td>${r.username}${recentFailuresByUser[r.username] >= 3 ? ' <span class="badge badge-suspended">Suspicious</span>' : ''}</td>
+        <td>${r.success ? '<span class="badge badge-active">Success</span>' : '<span class="badge badge-suspended">Failed</span>'}</td>
+      </tr>`).join("")}
+    </tbody></table></div>
+    <div class="table-foot">
+      <span>${schoolActivityItems.length > LOG_PAGE_SIZE ? `<span class="link-btn" id="schoolActivityToggle">${schoolActivityShowAll ? "Show latest 10" : `Show all (${schoolActivityItems.length})`}</span>` : ""}</span>
+      ${isFullAccess() ? `<button class="btn btn-danger btn-sm" id="clearSchoolActivityBtn">Clear this school's log</button>` : ""}
+    </div>
+    <div id="schoolActivityMsg"></div>`;
+  const toggle = document.getElementById("schoolActivityToggle");
+  if (toggle) toggle.onclick = () => { schoolActivityShowAll = !schoolActivityShowAll; renderSchoolActivityList(schoolId); };
+  const clearBtn = document.getElementById("clearSchoolActivityBtn");
+  if (clearBtn) clearBtn.onclick = async () => {
+    if (!confirm("Clear all login activity for this school? This can't be undone.")) return;
+    const msg = document.getElementById("schoolActivityMsg");
+    try {
+      await clearSchoolLoginLog(schoolId);
+      schoolActivityShowAll = false;
+      loadSchoolActivity(schoolId);
+    } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
+  };
+}
+
+function renderSchoolContactTab(s) {
+  const mount = document.getElementById("schoolTabContent");
+  mount.innerHTML = `
+    <div class="card">
+      <div class="section-title">Message this school</div>
+      <div class="tiny-note" style="margin-bottom:10px;">Sent only to <strong>${s.name}</strong> — no other school sees this.</div>
+      <div id="contactMsg"></div>
+      <div class="field"><label>Title</label><input id="contactTitle" /></div>
+      <div class="field"><label>Message</label><input id="contactBody" /></div>
+      <div class="field">
+        <label>Department</label>
+        <select id="contactDept">
+          <option value="all">All departments</option>
+          <option value="administration">Administrators</option>
+          <option value="academic">Academic</option>
+          <option value="finance">Finance</option>
+        </select>
+        <div class="tiny-note" style="margin-top:4px;">Narrows who at this school sees it — Administrators always see everything regardless.</div>
+      </div>
+      <button class="btn btn-primary btn-sm" id="sendContactBtn">Send to this school</button>
+    </div>
+    <div class="card">
+      <div class="section-title">Messages sent to this school</div>
+      <div id="contactHistory" class="tiny-note">Loading…</div>
+    </div>
+    <div class="card">
+      <div class="section-title">Support requests from this school</div>
+      <div class="tiny-note" style="margin-bottom:8px;">Tickets this school has submitted, with the reply thread — same conversation as the Communications tab, filtered to just this school.</div>
+      <div id="schoolSupportList" class="tiny-note">Loading…</div>
+    </div>`;
+
+  document.getElementById("sendContactBtn").onclick = async () => {
+    const msg = document.getElementById("contactMsg"); msg.innerHTML = "";
+    const title = document.getElementById("contactTitle").value.trim();
+    const body = document.getElementById("contactBody").value.trim();
+    const dept = document.getElementById("contactDept").value;
+    try {
+      if (!title || !body) throw new Error("Enter a title and message.");
+      await sendAnnouncement({ title, body, targetAll:false, targetSchoolIds:[s.id], targetDepartment: dept });
+      msg.innerHTML = `<div class="msg-ok">Sent to ${s.name}.</div>`;
+      document.getElementById("contactTitle").value = "";
+      document.getElementById("contactBody").value = "";
+      loadContactHistory(s.id);
+    } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
+  };
+  loadContactHistory(s.id);
+  loadSchoolSupportRequests(s.id);
+}
+
+async function loadContactHistory(schoolId) {
+  const el = document.getElementById("contactHistory");
+  try {
+    const items = await listAnnouncementsForSchool(schoolId);
+    if (!items.length) { el.innerHTML = `<div class="empty">No messages sent to this school yet.</div>`; return; }
+    el.innerHTML = items.map(a => `
+      <div class="admin-row">
+        <div>
+          <div style="font-weight:700;">${a.title}</div>
+          <div class="tiny-note">${a.body}</div>
+          <div class="tiny-note">${a.target_all ? "Sent to all schools (including this one)" : "Sent directly to this school"} · ${DEPT_LABELS[a.target_department] || "All departments"} · ${new Date(a.created_at).toLocaleString()}</div>
+        </div>
+      </div>`).join("");
+  } catch(e) { el.innerHTML = `<div class="err">${e.message}</div>`; }
+}
+
+async function loadSchoolSupportRequests(schoolId) {
+  const el = document.getElementById("schoolSupportList");
+  try {
+    const items = await listSupportRequestsForSchool(schoolId);
+    if (!items.length) { el.innerHTML = `<div class="empty">No support requests from this school yet.</div>`; return; }
+    el.innerHTML = items.map(r => `
+      <div class="admin-row" style="flex-direction:column;align-items:stretch;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;cursor:pointer;" data-toggle="${r.id}">
+          <div>
+            <div style="font-weight:700;">${r.subject} <span class="badge ${r.status==='open'?'badge-warn':'badge-active'}">${r.status}</span></div>
+            <div class="tiny-note">${new Date(r.updated_at || r.created_at).toLocaleString()}</div>
+            <div class="tiny-note">${r.message}</div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            ${r.status==='open' ? `<button class="btn btn-ghost btn-sm" data-resolve="${r.id}">Mark resolved</button>` : ""}
+            <span class="tiny-note">View thread ▾</span>
+          </div>
+        </div>
+        <div id="schoolThread-${r.id}" style="display:none;margin-top:10px;border-top:1px solid var(--line, #e4e8ef);padding-top:10px;">
+          <div id="schoolThreadMsgs-${r.id}" class="tiny-note">Loading…</div>
+          <div style="display:flex;gap:6px;margin-top:8px;">
+            <input id="schoolThreadReply-${r.id}" placeholder="Write a reply…" style="flex:1;" />
+            <button class="btn btn-primary btn-sm" data-reply="${r.id}">Send</button>
+          </div>
+        </div>
+      </div>`).join("");
+    el.querySelectorAll("[data-resolve]").forEach(btn => {
+      btn.onclick = async (e) => { e.stopPropagation(); await resolveSupportRequest(btn.dataset.resolve); loadSchoolSupportRequests(schoolId); };
+    });
+    el.querySelectorAll("[data-toggle]").forEach(row => {
+      row.onclick = async () => {
+        const id = row.dataset.toggle;
+        const panel = document.getElementById(`schoolThread-${id}`);
+        const isOpen = panel.style.display !== "none";
+        if (isOpen) { panel.style.display = "none"; return; }
+        panel.style.display = "block";
+        const msgsEl = document.getElementById(`schoolThreadMsgs-${id}`);
+        try {
+          const msgs = await listSupportThread(id);
+          msgsEl.innerHTML = msgs.length ? msgs.map(m => `
+            <div style="margin-bottom:6px;"><b>${m.sender==='transapple' ? (m.sender_name||'TransApple') : (m.sender_name||'School')}</b>
+            <span class="tiny-note">· ${new Date(m.created_at).toLocaleString()}</span><br/>${m.message}</div>`).join("")
+            : `<div class="tiny-note">No messages yet.</div>`;
+        } catch(e) { msgsEl.innerHTML = `<div class="err">${e.message}</div>`; }
+      };
+    });
+    el.querySelectorAll("[data-reply]").forEach(btn => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.reply;
+        const input = document.getElementById(`schoolThreadReply-${id}`);
+        const text = input.value.trim();
+        if (!text) return;
+        try {
+          await replyToSupportRequest(id, text, motherAdmin?.full_name || motherAdmin?.username);
+          input.value = "";
+          loadSchoolSupportRequests(schoolId);
+        } catch(e) { alert(e.message); }
+      };
+    });
+  } catch(e) { el.innerHTML = `<div class="err">${e.message}</div>`; }
 }
 
 function renderSchoolDangerTab(s) {
