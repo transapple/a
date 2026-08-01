@@ -273,6 +273,7 @@ async function continueInBrowserNow() {
   el.style.display = "none";
   el.innerHTML = "";
   await tryRestoreMotherSession();
+  purgeExpiredTrashedSchools(); // fire-and-forget: finalizes any school whose 30-day Trash window already passed
   render();
   const bootSplash = document.getElementById("bootSplash");
   if (bootSplash) bootSplash.classList.add("is-hidden");
@@ -377,7 +378,9 @@ create policy "Anyone can read active schools" on schools for select using (true
 alter table schools add column if not exists motto text;
 alter table schools add column if not exists location text;
 alter table schools add column if not exists size_range text;
-alter table schools add column if not exists password_hash text;
+-- NOTE: schools no longer have their own login password — access is always
+-- per-staff-account (see register_school() below). If an older run of this
+-- SQL already added a schools.password_hash column, it's simply unused now.
 
 create table if not exists mother_admins (
   id uuid primary key default gen_random_uuid(),
@@ -467,15 +470,17 @@ alter table schools add column if not exists approved_at timestamptz;
 
 -- New self-registrations now start 'pending' instead of 'active'. Signature
 -- kept in sync with the main app's register_school() (village/subcounty/
--- district instead of one location field, the admin's profile photo, and the
+-- district instead of one location field, the admin's profile photo, no
+-- school-level password — school access is per-staff-account only — and the
 -- auto-generated school_code / School ID) — update both together if either
 -- changes.
 drop function if exists register_school(text,text,text,text,text,text,text,text,text,text,text,text,text);
 drop function if exists register_school(text,text,text,text,text,text,text,text,text,text,text,text,text,text,text);
+drop function if exists register_school(text,text,text,text,text,text,text,text,text,text,text,text,text,text);
 create function register_school(
   p_school_name text, p_school_motto text,
   p_school_village text, p_school_subcounty text, p_school_district text,
-  p_school_password text, p_school_size_range text,
+  p_school_size_range text,
   p_admin_full_name text, p_admin_username text, p_admin_phone text,
   p_admin_whatsapp text, p_admin_email text,
   p_admin_password text, p_admin_pin text default null, p_admin_photo_url text default null
@@ -485,9 +490,6 @@ declare new_school schools; new_admin profiles; candidate_code text;
 begin
   if p_school_name is null or trim(p_school_name) = '' then
     raise exception 'School name is required.';
-  end if;
-  if p_school_password is null or length(p_school_password) < 6 then
-    raise exception 'School password must be at least 6 characters.';
   end if;
   if p_admin_full_name is null or trim(p_admin_full_name) = '' then
     raise exception 'Administrator full name is required.';
@@ -507,25 +509,25 @@ begin
     exit when not exists (select 1 from schools where school_code = candidate_code);
   end loop;
 
-  insert into schools (name, motto, village, subcounty, district, size_range, password_hash, status, school_code)
+  insert into schools (name, motto, village, subcounty, district, size_range, status, school_code)
   values (
     trim(p_school_name), nullif(trim(p_school_motto),''),
     nullif(trim(p_school_village),''), nullif(trim(p_school_subcounty),''), nullif(trim(p_school_district),''),
-    nullif(p_school_size_range,''), crypt(p_school_password, gen_salt('bf')), 'pending', candidate_code
+    nullif(p_school_size_range,''), 'pending', candidate_code
   ) returning * into new_school;
   insert into profiles (
     full_name, username, department, phone, whatsapp, email,
-    pin, password_hash, role, photo_url, school_id
+    pin, password_hash, role, photo_url, school_id, is_owner
   ) values (
     trim(p_admin_full_name), p_admin_username, 'administration',
     nullif(p_admin_phone,''), nullif(p_admin_whatsapp,''), nullif(p_admin_email,''),
-    nullif(p_admin_pin,''), crypt(p_admin_password, gen_salt('bf')), 'staff', p_admin_photo_url, new_school.id
+    nullif(p_admin_pin,''), crypt(p_admin_password, gen_salt('bf')), 'staff', p_admin_photo_url, new_school.id, true
   ) returning * into new_admin;
   new_admin.password_hash := null;
   return new_admin;
 end;
 $register_school$;
-grant execute on function register_school(text,text,text,text,text,text,text,text,text,text,text,text,text,text,text) to anon, authenticated;
+grant execute on function register_school(text,text,text,text,text,text,text,text,text,text,text,text,text) to anon, authenticated;
 
 -- Login now also blocks accounts whose school is pending/suspended/deactivated.
 drop function if exists verify_login(text, text);
@@ -969,8 +971,11 @@ const SCHOOL_FEATURES_SQL = `alter table schools add column if not exists featur
      the `schools` row too. The school disappears from this app entirely.
    Both require a FULL-ACCESS admin's own password as proof, exactly like
    other destructive actions in this app, and both are logged to audit_log.
-   IRREVERSIBLE — there is no undo and no soft-delete here; this is a real
-   permanent delete, unlike the app's own per-record Trash/soft-delete. */
+   IRREVERSIBLE — there is no undo here, and purge_school_data() has no
+   soft-delete. delete_school_completely() itself is superseded below by
+   SCHOOL_TRASH_SQL's soft_delete_school() for the app's "Delete school"
+   button — kept here only as the low-level building block the Danger Zone's
+   "Clear all data" path still calls (via purge_school_data). */
 const SCHOOL_DANGER_ZONE_SQL = `drop function if exists purge_school_data(text, text, uuid);
 create function purge_school_data(p_actor_username text, p_actor_password text, p_school_id uuid)
 returns void language plpgsql security definer as $$
@@ -1049,6 +1054,127 @@ begin
 end;
 $$;
 grant execute on function delete_school_completely(text,text,uuid) to anon, authenticated;`;
+
+/* ---------------- SCHOOL TRASH: 30-DAY AUTO-PURGE, NO RESTORE (run once, after SCHOOL_DANGER_ZONE_SQL) ----------------
+   Replaces the old instant "Delete school completely" with a 30-day Trash:
+     1) soft_delete_school() — the app's "Delete school" button now calls
+        this instead of delete_school_completely(). It only stamps
+        schools.deleted_at / deleted_by; no data is touched yet. Login is
+        blocked immediately for every account at that school (verify_login
+        in the school app checks schools.deleted_at and shows the school's
+        name in the message — see the school app's own SQL for that).
+     2) purge_expired_trashed_schools() — safe to call anytime; it only ever
+        acts on schools whose deleted_at is 30+ days in the past. It wipes
+        every data row for each one (same table list as purge_school_data
+        above) and then deletes the schools row itself. Both apps call this
+        once on startup (see loadSchools()/app boot in the JS), which is
+        enough to guarantee the purge happens "automatically" the next time
+        either app is opened after the 30 days are up — no admin action
+        needed, and there is no restore path once it runs.
+     For a true zero-touch guarantee even if nobody opens either app for a
+     while, optionally enable pg_cron (Supabase → Database → Extensions) and
+     run once:
+       select cron.schedule('purge-expired-trashed-schools', '0 3 * * *',
+         $$select purge_expired_trashed_schools();$$);
+     This is optional — everything above works without it. */
+const SCHOOL_TRASH_SQL = `alter table schools add column if not exists deleted_at timestamptz;
+alter table schools add column if not exists deleted_by text;
+
+-- Moves a school to Trash. Requires a FULL-ACCESS admin's own password,
+-- exactly like every other destructive action in this app. Nothing is
+-- deleted yet — only deleted_at/deleted_by are stamped — but login is
+-- blocked for the whole school from this moment on.
+drop function if exists soft_delete_school(text, text, uuid);
+create function soft_delete_school(p_actor_username text, p_actor_password text, p_school_id uuid)
+returns void language plpgsql security definer as $$
+declare actor mother_admins; school_row schools;
+begin
+  select * into actor from mother_admins where mother_admins.username = p_actor_username;
+  if actor.id is null or crypt(p_actor_password, actor.password_hash) <> actor.password_hash then
+    raise exception 'Your password could not be verified.';
+  end if;
+  if actor.active is not true then
+    raise exception 'Your account is deactivated.';
+  end if;
+  if actor.role <> 'full_access' then
+    raise exception 'Only full-access admins can delete a school.';
+  end if;
+
+  select * into school_row from schools where id = p_school_id;
+  if school_row.id is null then
+    raise exception 'School not found.';
+  end if;
+  if school_row.deleted_at is not null then
+    raise exception 'This school is already in Trash.';
+  end if;
+
+  update schools set deleted_at = now(), deleted_by = p_actor_username where id = p_school_id;
+  insert into audit_log (actor_username, action, target_type, target_id, details)
+  values (p_actor_username, 'soft_delete_school', 'school', p_school_id::text,
+    '"' || coalesce(school_row.name,'') || '" was moved to Trash — login is blocked immediately; it will be permanently deleted with no restore in 30 days');
+end;
+$$;
+grant execute on function soft_delete_school(text,text,uuid) to anon, authenticated;
+
+-- Internal only (no grant): wipes every data row for one school, same table
+-- list as purge_school_data() above, then removes the schools row itself.
+-- Only ever called from purge_expired_trashed_schools() below.
+drop function if exists purge_school_and_row(uuid);
+create function purge_school_and_row(p_school_id uuid)
+returns void language plpgsql security definer as $$
+declare t text; school_name text;
+begin
+  select name into school_name from schools where id = p_school_id;
+
+  set local session_replication_role = replica;
+  foreach t in array array[
+    'parent_messages','private_messages','parent_students','fee_reminders','account_change_requests',
+    'exam_results','attendance','staff_attendance','fee_payments','fee_structures',
+    'exams','exam_types','grades','class_subjects','subjects','classes','terms',
+    'school_communications','school_meetings','school_settings',
+    'students','teachers','profiles'
+  ]
+  loop
+    if to_regclass(t) is not null
+       and exists (
+         select 1 from information_schema.columns
+         where table_schema = 'public' and table_name = t and column_name = 'school_id'
+       )
+    then
+      execute format('delete from %I where school_id = %L', t, p_school_id);
+    end if;
+  end loop;
+
+  if to_regclass('school_payments') is not null then delete from school_payments where school_id = p_school_id; end if;
+  if to_regclass('school_support_requests') is not null then delete from school_support_requests where school_id = p_school_id; end if;
+  if to_regclass('school_login_log') is not null then delete from school_login_log where school_id = p_school_id; end if;
+  if to_regclass('platform_error_log') is not null then update platform_error_log set school_id = null where school_id = p_school_id; end if;
+
+  delete from schools where id = p_school_id;
+
+  insert into audit_log (actor_username, action, target_type, target_id, details)
+  values ('system', 'auto_purge_trashed_school', 'school', p_school_id::text,
+    '"' || coalesce(school_name,'') || '" reached the end of its 30-day Trash window and was permanently deleted, with all its data — no restore possible');
+end;
+$$;
+
+-- Automatic sweep. No password needed to call this — it never acts on a
+-- school before its 30 days are up, so exposing it doesn't let anyone skip
+-- or shorten the retention window. Both apps call this once on startup.
+drop function if exists purge_expired_trashed_schools();
+create function purge_expired_trashed_schools()
+returns integer language plpgsql security definer as $$
+declare rec record; n integer := 0;
+begin
+  for rec in select id from schools where deleted_at is not null and deleted_at <= now() - interval '30 days'
+  loop
+    perform purge_school_and_row(rec.id);
+    n := n + 1;
+  end loop;
+  return n;
+end;
+$$;
+grant execute on function purge_expired_trashed_schools() to anon, authenticated;`;
 
 
 /* ---------------- SCHOOL SELF-UPGRADE UPGRADE (run once, after SCHOOL_DANGER_ZONE_SQL) ----------------
@@ -1144,11 +1270,12 @@ grant execute on function cancel_school_upgrade_request(text,text,uuid) to anon,
 -- profile is really an active, non-deleted, non-suspended Administration-
 -- department staff member of this exact school before touching anything.
 drop function if exists complete_school_upgrade(uuid,text,text,text,text,text,text,text,text,text);
+drop function if exists complete_school_upgrade(uuid,text,text,text,text,text,text,text,text);
 create function complete_school_upgrade(
   p_school_id uuid, p_actor_username text, p_actor_password text,
   p_school_code text default null, p_motto text default null,
   p_village text default null, p_subcounty text default null, p_district text default null,
-  p_size_range text default null, p_password text default null
+  p_size_range text default null
 ) returns schools language plpgsql security definer as $$
 declare actor profiles; s schools; candidate_code text;
 begin
@@ -1200,12 +1327,6 @@ begin
     size_range = case when (size_range is null or trim(size_range) = '') and p_size_range is not null and trim(p_size_range) <> '' then trim(p_size_range) else size_range end
   where id = p_school_id;
 
-  if (s.password_hash is null) and p_password is not null and length(p_password) >= 6 then
-    update schools set password_hash = crypt(p_password, gen_salt('bf')) where id = p_school_id;
-  elsif (s.password_hash is null) and p_password is not null and length(p_password) < 6 then
-    raise exception 'School password must be at least 6 characters.';
-  end if;
-
   update schools set upgrade_completed_at = now() where id = p_school_id;
 
   insert into audit_log (actor_username, action, target_type, target_id, details)
@@ -1215,7 +1336,7 @@ begin
   return s;
 end;
 $$;
-grant execute on function complete_school_upgrade(uuid,text,text,text,text,text,text,text,text,text) to anon, authenticated;`;
+grant execute on function complete_school_upgrade(uuid,text,text,text,text,text,text,text,text) to anon, authenticated;`;
 
 /* ---------------- SCHOOL ACTIVITY UPGRADE (run once, after MOTHER_OPS_SQL) ----------------
    Adds a per-school login activity log — every attempt against that school's
@@ -1549,6 +1670,17 @@ function schoolLogoHtml(s, size) {
   const cls = size === "lg" ? "school-logo school-logo-lg" : "school-logo";
   return `<div class="${cls}">${s.logo_url ? `<img src="${s.logo_url}" alt="${s.name||''} logo"/>` : initials(s.name)}</div>`;
 }
+// Renders the first/founding Administrator's registration photo (collected on
+// the school app's "Register Your School" screen — see adminPhotoUrl in
+// registerSchool()/register_school()), falling back to initials when no
+// photo was set (e.g. schools registered before the photo field existed).
+function adminAvatarHtml(admin, size) {
+  size = size || 32;
+  const name = admin?.full_name || "";
+  const photo = admin?.photo_url;
+  if (photo) return `<img src="${photo}" alt="${name}" style="width:${size}px;height:${size}px;border-radius:8px;object-fit:cover;flex-shrink:0;"/>`;
+  return `<div class="school-logo" style="width:${size}px;height:${size}px;">${initials(name)}</div>`;
+}
 
 const REMEMBER_KEY = "novaMotherUsername";
 let motherAdmin = null;
@@ -1712,7 +1844,7 @@ async function fetchFirstAdmins(schoolIds) {
   if (!ids.length) return {};
   let rows;
   try {
-    rows = await sb(`/rest/v1/profiles?${qs({school_id:`in.(${ids.join(",")})`, department:"eq.administration", "deleted_at":"is.null", select:"id,school_id,full_name,username,phone,email,whatsapp,created_at", order:"created_at.asc"})}`);
+    rows = await sb(`/rest/v1/profiles?${qs({school_id:`in.(${ids.join(",")})`, department:"eq.administration", "deleted_at":"is.null", select:"id,school_id,full_name,username,phone,email,whatsapp,photo_url,created_at", order:"created_at.asc"})}`);
   } catch(e) { return {}; }
   const map = {};
   rows.forEach(r => { if (r.school_id && !map[r.school_id]) map[r.school_id] = r; });
@@ -1754,18 +1886,27 @@ async function purgeSchoolData(schoolId, password) {
     p_actor_username: motherAdmin.username, p_actor_password: password, p_school_id: schoolId,
   }) });
 }
-// Wipes every data row AND removes the school's own account/record. The
-// school disappears from this app entirely. Irreversible. (The old
-// deleteSchool()/raw DELETE above will actually fail once a school has any
-// data in it, since every school-scoped table references schools(id) — this
-// is the function that actually works for a school that's been used.)
+// Moves a school to Trash: login is blocked for the whole school immediately,
+// but nothing is deleted yet. After 30 days purgeExpiredTrashedSchools() (or
+// the next automatic sweep, see below) permanently deletes the school and
+// every row of its data. There is no restore — this cannot be undone once
+// the 30 days are up. (Kept the old name so the one call site below didn't
+// need to change; it now calls soft_delete_school, not delete_school_completely.)
 async function deleteSchoolCompletely(schoolId, password) {
   assertFullAccess();
   if (!motherAdmin) throw new Error("Not signed in.");
   if (!password) throw new Error("Enter your password to confirm.");
-  return sb(`/rest/v1/rpc/delete_school_completely`, { method:"POST", body: JSON.stringify({
+  return sb(`/rest/v1/rpc/soft_delete_school`, { method:"POST", body: JSON.stringify({
     p_actor_username: motherAdmin.username, p_actor_password: password, p_school_id: schoolId,
   }) });
+}
+// Opportunistic automatic sweep: permanently purges any school whose 30-day
+// Trash window has already elapsed. No-op (and harmless) if none have. Call
+// this on app boot and whenever the schools list loads so the 30-day purge
+// actually happens without anyone needing to click anything.
+async function purgeExpiredTrashedSchools() {
+  try { return await sb(`/rest/v1/rpc/purge_expired_trashed_schools`, { method:"POST", body: JSON.stringify({}) }); }
+  catch (e) { return null; }
 }
 // Marks an old-format school "Upgrade Available" — its own Administrator
 // will see a prompt inside the school app to complete the form themselves.
@@ -1870,6 +2011,10 @@ async function rejectSchool(id) {
   logAudit("reject_school", "school", id, null);
   return res;
 }
+// Restores a REJECTED school back to Pending. This has nothing to do with
+// Trash — a trashed school (soft_delete_school) is not restorable by design;
+// see SCHOOL_TRASH_SQL. There is intentionally no equivalent "restore" call
+// for the Trash list.
 async function restoreSchool(id) {
   assertFullAccess();
   const res = await sb(`/rest/v1/schools?id=eq.${id}`, { method:"PATCH", body: JSON.stringify({ status:"pending" }) });
@@ -2425,6 +2570,11 @@ async function renderDashboard() {
         <div class="tiny-note" style="margin-bottom:8px;">Rejected schools stay here — restore one back to Pending, or delete it completely.</div>
         <div id="rejectedList"></div>
       </div>
+      <div class="card" id="trashCard" style="display:none;">
+        <div class="section-title" style="color:var(--red-dark);">Trash</div>
+        <div class="tiny-note" style="margin-bottom:8px;">Deleted schools sit here for 30 days — login is already blocked for them — then they're permanently purged automatically, data and all. There is no restore.</div>
+        <div id="trashList"></div>
+      </div>
       <div class="card">
         <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
           <div class="section-title" style="margin:0;">Schools</div>
@@ -2470,9 +2620,38 @@ async function loadSchools() {
   const pendingCard = document.getElementById("pendingCard");
   const pendingList = document.getElementById("pendingList");
   const exportBtn = document.getElementById("exportCsvBtn");
+  purgeExpiredTrashedSchools(); // fire-and-forget: finalizes any school whose 30-day Trash window already passed
   try {
-    const schools = await listSchools();
-    if (exportBtn) exportBtn.onclick = () => exportSchoolsCSV(schools);
+    const allSchools = await listSchools();
+    if (exportBtn) exportBtn.onclick = () => exportSchoolsCSV(allSchools.filter(s => !s.deleted_at));
+    if (!allSchools.length) { listEl.innerHTML = `<div class="tiny-note">No schools registered yet.</div>`; if (pendingCard) pendingCard.style.display = "none"; if (document.getElementById("rejectedCard")) document.getElementById("rejectedCard").style.display = "none"; if (document.getElementById("trashCard")) document.getElementById("trashCard").style.display = "none"; return; }
+
+    // Trashed schools never appear in Pending/Rejected/Schools below — they
+    // get their own Trash card, with no restore option (see SCHOOL_TRASH_SQL).
+    const trashCard = document.getElementById("trashCard");
+    const trashList = document.getElementById("trashList");
+    const trashed = allSchools.filter(s => s.deleted_at);
+    if (trashCard && trashList) {
+      if (trashed.length) {
+        trashCard.style.display = "";
+        trashList.innerHTML = trashed.map(s => {
+          const daysLeft = Math.max(0, 30 - Math.floor((Date.now() - new Date(s.deleted_at).getTime()) / 86400000));
+          return `
+          <div class="school-row">
+            <div class="row" style="gap:10px;">
+              ${schoolLogoHtml(s)}
+              <div>
+                <div class="school-name">${s.name}</div>
+                <div class="tiny-note">Deleted ${new Date(s.deleted_at).toLocaleDateString()}${s.deleted_by ? ` by ${s.deleted_by}` : ""}</div>
+                <div class="tiny-note" style="color:var(--red-dark);font-weight:700;">${daysLeft > 0 ? `Permanently deleted in ${daysLeft} day${daysLeft===1?"":"s"} — no restore` : "Being permanently deleted — no restore"}</div>
+              </div>
+            </div>
+          </div>`;
+        }).join("");
+      } else { trashCard.style.display = "none"; }
+    }
+
+    const schools = allSchools.filter(s => !s.deleted_at);
     if (!schools.length) { listEl.innerHTML = `<div class="tiny-note">No schools registered yet.</div>`; if (pendingCard) pendingCard.style.display = "none"; if (document.getElementById("rejectedCard")) document.getElementById("rejectedCard").style.display = "none"; return; }
 
     const pending = schools.filter(s => s.status === "pending");
@@ -2486,7 +2665,7 @@ async function loadSchools() {
               <div>
                 <div class="school-name">${s.name}</div>
                 <div class="tiny-note">${[s.motto, schoolLocationLabel(s)].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleString()}</div>
-                <div class="tiny-note">${s.first_admin ? `Created by ${s.first_admin.full_name}${s.first_admin.username ? " (@"+s.first_admin.username+")" : ""}` : "No administrator account found"}</div>
+                <div class="tiny-note">${s.first_admin ? `<span style="display:inline-flex;align-items:center;gap:6px;vertical-align:middle;">${adminAvatarHtml(s.first_admin, 20)} Created by ${s.first_admin.full_name}${s.first_admin.username ? " (@"+s.first_admin.username+")" : ""}</span>` : "No administrator account found"}</div>
               </div>
             </div>
             <div class="row">
@@ -2525,7 +2704,7 @@ async function loadSchools() {
               <div>
                 <div class="school-name">${s.name}</div>
                 <div class="tiny-note">${[s.motto, schoolLocationLabel(s)].filter(Boolean).join(" · ") || "Self-registered · " + new Date(s.created_at).toLocaleString()}</div>
-                <div class="tiny-note">${s.first_admin ? `Created by ${s.first_admin.full_name}${s.first_admin.username ? " (@"+s.first_admin.username+")" : ""}` : "No administrator account found"}</div>
+                <div class="tiny-note">${s.first_admin ? `<span style="display:inline-flex;align-items:center;gap:6px;vertical-align:middle;">${adminAvatarHtml(s.first_admin, 20)} Created by ${s.first_admin.full_name}${s.first_admin.username ? " (@"+s.first_admin.username+")" : ""}</span>` : "No administrator account found"}</div>
               </div>
             </div>
             <div class="row">
@@ -2580,7 +2759,7 @@ async function loadSchools() {
             <td class="name-cell"><div class="school-name">${s.name}</div></td>
             <td>${schoolLocationLabel(s) || "—"}</td>
             <td>${sizeLabel(s)}</td>
-            <td class="name-cell">${s.first_admin ? s.first_admin.full_name : "—"}</td>
+            <td class="name-cell">${s.first_admin ? `<div class="row" style="align-items:center;gap:8px;">${adminAvatarHtml(s.first_admin, 28)}<span>${s.first_admin.full_name}</span></div>` : "—"}</td>
             <td class="contact-cell">${adminContact(s)}</td>
             <td>${statusBadge(s.status)}${s.status==='active' ? ` ${subscriptionBadge(s)}` : ""} ${schoolUpgradeBadge(s)}</td>
           </tr>`).join("")}
@@ -2884,7 +3063,7 @@ async function renderSchoolDetail() {
               ${s.school_code ? `<div class="tiny-note" style="font-family:monospace;font-weight:700;">School ID: ${s.school_code}</div>` : ""}
               <div class="tiny-note">${[s.motto, schoolLocationLabel(s), s.size_range].filter(Boolean).join(" · ") || "No profile details yet"}</div>
               <div class="tiny-note">Registered ${new Date(s.created_at).toLocaleString()}${s.approved_at ? " · Approved " + new Date(s.approved_at).toLocaleString() : ""}</div>
-              <div class="tiny-note">${s.first_admin ? `Created by <strong>${s.first_admin.full_name}</strong>${s.first_admin.username ? ` (@${s.first_admin.username})` : ""}${[s.first_admin.phone, s.first_admin.email, s.first_admin.whatsapp].filter(Boolean).length ? " · " + [s.first_admin.phone, s.first_admin.email, s.first_admin.whatsapp].filter(Boolean).join(" · ") : ""}` : "No administrator account found for this school"}</div>
+              <div class="tiny-note">${s.first_admin ? `<span style="display:inline-flex;align-items:center;gap:6px;vertical-align:middle;">${adminAvatarHtml(s.first_admin, 22)} Created by <strong>${s.first_admin.full_name}</strong>${s.first_admin.username ? ` (@${s.first_admin.username})` : ""}${[s.first_admin.phone, s.first_admin.email, s.first_admin.whatsapp].filter(Boolean).length ? " · " + [s.first_admin.phone, s.first_admin.email, s.first_admin.whatsapp].filter(Boolean).join(" · ") : ""}</span>` : "No administrator account found for this school"}</div>
             </div>
           </div>
           <div>${statusBadge(s.status)}</div>
@@ -3375,13 +3554,13 @@ function renderSchoolDangerTab(s) {
   mount.innerHTML = `
     <div class="card card-danger" id="dangerZoneCard">
       <div class="section-title" style="color:var(--red-dark);">Danger zone</div>
-      <div class="tiny-note" style="margin-bottom:10px;">These actions permanently delete data. There is no undo, and no soft-delete/Trash to recover from — unlike everything else in this app. Type the school's exact name below to unlock either button.</div>
+      <div class="tiny-note" style="margin-bottom:10px;">"Clear all data" is instant and permanent — there is no undo. "Delete school" moves the school to Trash instead: login is blocked immediately, with the reason shown by name, and the school is permanently purged automatically 30 days later — with no restore, ever. Type the school's exact name below to unlock either button.</div>
       <div id="dangerMsg">${notice ? `<div class="err">${notice}</div>` : ""}</div>
       <div class="field"><label>Type "${s.name}" to confirm</label><input id="dangerConfirmName" placeholder="${s.name}" /></div>
       <div class="field"><label>Your password</label><input id="dangerConfirmPw" type="password" /></div>
       <div class="row" style="flex-wrap:wrap;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="clearDataBtn" disabled>Clear all data (keep the school &amp; its subscription)</button>
-        <button class="btn btn-danger btn-sm" id="deleteAllBtn" disabled>Delete school completely (data + record)</button>
+        <button class="btn btn-danger btn-sm" id="deleteAllBtn" disabled>Delete school (moves to Trash, purged in 30 days)</button>
       </div>
     </div>`;
 
@@ -4422,6 +4601,7 @@ document.addEventListener("focusin", (e) => {
   // Installed & launched as an app → boot splash while the session restores,
   // then hand off to the normal app render.
   await tryRestoreMotherSession();
+  purgeExpiredTrashedSchools(); // fire-and-forget: finalizes any school whose 30-day Trash window already passed
   render();
   const bootSplash = document.getElementById("bootSplash");
   if (bootSplash) bootSplash.classList.add("is-hidden");
