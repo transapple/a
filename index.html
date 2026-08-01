@@ -89,8 +89,9 @@
   /* ---- Forms ---- */
   .field{margin-bottom:12px;}
   .field label{display:block;font-size:11.5px;font-weight:700;color:var(--ink-soft);margin-bottom:5px;text-transform:uppercase;letter-spacing:.02em;}
-  .field input,.field select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);font-size:14px;background:var(--surface-2);color:var(--ink);transition:border-color .15s ease,background .15s ease;}
-  .field input:focus,.field select:focus{outline:none;border-color:var(--accent);background:#fff;}
+  .field input,.field select,.field textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);font-size:14px;background:var(--surface-2);color:var(--ink);transition:border-color .15s ease,background .15s ease;}
+  .field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--accent);background:#fff;}
+  .field textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;resize:vertical;}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 
   /* ---- Toggle switch (feature/module on-off) ---- */
@@ -1332,6 +1333,76 @@ alter table sent_alerts enable row level security;
 drop policy if exists "Mother app can manage sent alerts" on sent_alerts;
 create policy "Mother app can manage sent alerts" on sent_alerts for all using (true) with check (true);`;
 
+// Powers the Database Updates screen: every pending SQL migration the school
+// app (or the Mother App itself) needs lives here instead of being shown
+// inline in the school app. A mother admin copies sql_code into Supabase's
+// SQL Editor, then marks the row Applied (or Failed, with a note, so it
+// stays visible until it's retried successfully) — or, for anything that
+// doesn't need superuser/extension privileges, taps "Run now" to have
+// run_database_update() execute it directly and flip the status itself.
+//
+// run_database_update() requires a FULL-ACCESS admin's own password as
+// proof, exactly like every other destructive action in this app (see
+// purge_school_data/delete_school_completely above) — but note this one is
+// strictly more powerful than those: it executes whatever text sits in
+// sql_code with this function's elevated privileges. The entire safety net
+// here is "only a verified full-access mother admin can trigger it" — there
+// is no per-statement allowlist. Treat mother_admin passwords accordingly,
+// and prefer the manual copy/paste path for anything you haven't reviewed.
+const DATABASE_UPDATES_SQL = `create table if not exists database_updates (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  description text,
+  sql_code text not null,
+  status text not null default 'pending' check (status in ('pending','applied','failed')),
+  error_message text,
+  created_at timestamptz not null default now(),
+  applied_at timestamptz
+);
+alter table database_updates enable row level security;
+drop policy if exists "Mother app can manage database updates" on database_updates;
+create policy "Mother app can manage database updates" on database_updates for all using (true) with check (true);
+
+drop function if exists run_database_update(text, text, uuid);
+create function run_database_update(p_actor_username text, p_actor_password text, p_update_id uuid)
+returns database_updates language plpgsql security definer as $$
+declare actor mother_admins; upd database_updates; err text;
+begin
+  select * into actor from mother_admins where mother_admins.username = p_actor_username;
+  if actor.id is null or crypt(p_actor_password, actor.password_hash) <> actor.password_hash then
+    raise exception 'Your password could not be verified.';
+  end if;
+  if actor.active is not true then
+    raise exception 'Your account is deactivated.';
+  end if;
+  if actor.role <> 'full_access' then
+    raise exception 'Only full-access admins can run database updates.';
+  end if;
+
+  select * into upd from database_updates where id = p_update_id;
+  if upd.id is null then
+    raise exception 'Update not found.';
+  end if;
+
+  begin
+    execute upd.sql_code;
+    update database_updates set status = 'applied', applied_at = now(), error_message = null
+      where id = p_update_id returning * into upd;
+    insert into audit_log (actor_username, action, target_type, target_id, details)
+      values (p_actor_username, 'run_database_update', 'database_update', p_update_id::text, 'applied: ' || upd.title);
+  exception when others then
+    err := sqlerrm;
+    update database_updates set status = 'failed', error_message = err
+      where id = p_update_id returning * into upd;
+    insert into audit_log (actor_username, action, target_type, target_id, details)
+      values (p_actor_username, 'run_database_update_failed', 'database_update', p_update_id::text, 'failed: ' || err);
+  end;
+
+  return upd;
+end;
+$$;
+grant execute on function run_database_update(text,text,uuid) to anon, authenticated;`;
+
 const RISK_ALERTS_FUNCTION_CODE = `// supabase/functions/risk-alerts-check/index.ts
 //
 // Scheduled Edge Function: checks a few "needs attention" conditions and
@@ -1481,7 +1552,7 @@ function schoolLogoHtml(s, size) {
 
 const REMEMBER_KEY = "novaMotherUsername";
 let motherAdmin = null;
-let view = "dashboard"; // "dashboard", "analytics", "risk", "monitoring", "comms", "updates", "settings", or "schoolDetail"
+let view = "dashboard"; // "dashboard", "analytics", "risk", "monitoring", "comms", "updates", "security", "dbupdates", "settings", or "schoolDetail"
 let currentSchoolId = null;
 let schoolSubTab = "subscription"; // "subscription", "features", "admins", "danger"
 let schoolDangerNotice = null; // one-shot message shown when redirected into the Danger Zone tab
@@ -2030,6 +2101,62 @@ async function listErrorLog() {
   return sb(`/rest/v1/platform_error_log?${qs({select:"*,schools(name)", order:"created_at.desc", limit:20})}`);
 }
 
+/* ---------------- DATABASE UPDATES ----------------
+   The single source of truth for pending SQL migrations. The school app
+   never shows SQL to schools anymore — when a feature needs a migration, a
+   row goes here (via addDatabaseUpdate, typically called by whoever is
+   building the feature) and a mother admin copies/runs it, then marks it
+   Applied or Failed from the Database Updates screen. */
+async function listDatabaseUpdates() {
+  return sb(`/rest/v1/database_updates?${qs({select:"*", order:"created_at.desc"})}`);
+}
+async function addDatabaseUpdate(title, sqlCode, description) {
+  assertFullAccess();
+  const res = await sb(`/rest/v1/database_updates`, { method:"POST", body: JSON.stringify({ title, sql_code: sqlCode, description: description || null, status: "pending" }) });
+  logAudit("add_database_update", "database_update", null, title);
+  return res;
+}
+async function markDatabaseUpdateApplied(id) {
+  assertFullAccess();
+  const res = await sb(`/rest/v1/database_updates?id=eq.${id}`, { method:"PATCH", body: JSON.stringify({ status: "applied", applied_at: new Date().toISOString(), error_message: null }) });
+  logAudit("apply_database_update", "database_update", id, null);
+  return res;
+}
+async function markDatabaseUpdateFailed(id, errorMessage) {
+  assertFullAccess();
+  const res = await sb(`/rest/v1/database_updates?id=eq.${id}`, { method:"PATCH", body: JSON.stringify({ status: "failed", error_message: errorMessage || null }) });
+  logAudit("fail_database_update", "database_update", id, errorMessage);
+  return res;
+}
+async function resetDatabaseUpdateToPending(id) {
+  assertFullAccess();
+  const res = await sb(`/rest/v1/database_updates?id=eq.${id}`, { method:"PATCH", body: JSON.stringify({ status: "pending", error_message: null, applied_at: null }) });
+  logAudit("retry_database_update", "database_update", id, null);
+  return res;
+}
+// Runs the migration server-side via the guarded run_database_update() RPC
+// instead of a manual copy/paste into Supabase. Requires the signed-in
+// admin's own password as proof (never stored — passed straight through to
+// the RPC call and discarded) and full-access role; the function itself
+// re-checks both server-side. Returns the updated row either way — a
+// caught SQL error comes back as status:"failed" + error_message rather
+// than throwing, so the card can just be re-rendered from the result.
+async function runDatabaseUpdate(id, password) {
+  assertFullAccess();
+  if (!motherAdmin) throw new Error("Not signed in.");
+  if (!password) throw new Error("Enter your password to run this automatically.");
+  const rows = await sb(`/rest/v1/rpc/run_database_update`, { method:"POST", body: JSON.stringify({
+    p_actor_username: motherAdmin.username, p_actor_password: password, p_update_id: id,
+  }) });
+  return Array.isArray(rows) ? rows[0] : rows;
+}
+async function deleteDatabaseUpdate(id) {
+  assertFullAccess();
+  const res = await sb(`/rest/v1/database_updates?id=eq.${id}`, { method:"DELETE" });
+  logAudit("delete_database_update", "database_update", id, null);
+  return res;
+}
+
 /* ---------------- RISK & RETENTION ----------------
    Per-school engagement (for the "going quiet" list) and real Web Push
    subscribe/unsubscribe for this device. The scheduled server-side check
@@ -2147,6 +2274,7 @@ function navTabs(active) {
     ["risk","Risk","risk"],
     ["monitoring","Monitoring","monitoring"],["comms","Comms","comms"],
     ["updates","Updates","updates"],["security","Security","security"],
+    ["dbupdates","DB Updates","database"],
     ["settings","Settings","settings"],
   ];
   return `<div class="tabrail">
@@ -2648,6 +2776,10 @@ function renderSettingsDatabaseTab() {
       <details style="margin-top:8px;"><summary>Upgrade: school self-upgrade (migrate old-format schools)</summary>
         <p class="tiny-note">If the "Format &amp; ID" tab on a school's page, or "Mark Upgrade Available", errors out, run this once in Supabase → SQL Editor.</p>
         <pre>${MOTHER_SELF_UPGRADE_SQL}</pre>
+      </details>
+      <details style="margin-top:8px;"><summary>Upgrade: Database Updates screen</summary>
+        <p class="tiny-note">If the Database Updates screen errors out, run this once in Supabase → SQL Editor.</p>
+        <pre>${DATABASE_UPDATES_SQL}</pre>
       </details>
     </div>`;
 }
@@ -4093,6 +4225,167 @@ function renderAuditLogList() {
   };
 }
 
+/* ---------------- DATABASE UPDATES ----------------
+   The school app no longer shows any SQL/Supabase instructions to schools.
+   Instead, every pending migration lives here: copy the SQL, run it in
+   Supabase's SQL Editor, then mark it Applied (or Failed, with a note — it
+   stays in the active list until it's re-run successfully). */
+function dbUpdateStatusBadge(status) {
+  if (status === "applied") return `<span class="badge badge-active">Applied</span>`;
+  if (status === "failed") return `<span class="badge badge-suspended">Failed</span>`;
+  return `<span class="badge badge-pending">Pending</span>`;
+}
+function dbUpdateCardHtml(u) {
+  const created = new Date(u.created_at).toLocaleString();
+  const appliedLine = u.status === "applied" && u.applied_at ? `<div class="tiny-note">Applied ${new Date(u.applied_at).toLocaleString()}</div>` : "";
+  const errorLine = u.status === "failed" && u.error_message ? `<div class="err" style="margin-top:6px;">${u.error_message}</div>` : "";
+  const actions = u.status === "applied"
+    ? `<button class="btn btn-sm" data-dbu-delete="${u.id}">Remove from history</button>`
+    : `<button class="btn btn-primary btn-sm" data-dbu-run="${u.id}">Run now</button>
+       <button class="btn btn-sm" data-dbu-applied="${u.id}">Mark Applied</button>
+       <button class="btn btn-sm" data-dbu-failed="${u.id}">Mark Failed</button>`;
+  return `<div class="card" style="margin-bottom:10px;">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+      <div>
+        <div style="font-weight:700;">${u.title} ${dbUpdateStatusBadge(u.status)}</div>
+        <div class="tiny-note">Created ${created}</div>
+        ${appliedLine}
+      </div>
+    </div>
+    ${u.description ? `<p class="tiny-note" style="margin-top:8px;">${u.description}</p>` : ""}
+    ${errorLine}
+    <details style="margin-top:10px;" ${u.status === "applied" ? "" : "open"}><summary>SQL</summary>
+      <pre style="margin-top:8px;" id="dbuSql-${u.id}">${u.sql_code}</pre>
+      <button class="btn btn-sm" style="margin-top:8px;" data-dbu-copy="${u.id}">Copy SQL</button>
+    </details>
+    <div id="dbuCardMsg-${u.id}" style="margin-top:8px;"></div>
+    <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;">${actions}</div>
+  </div>`;
+}
+async function loadDatabaseUpdates() {
+  const activeEl = document.getElementById("dbuActiveList");
+  const appliedEl = document.getElementById("dbuAppliedList");
+  if (!activeEl) return;
+  activeEl.innerHTML = `<div class="tiny-note">Loading…</div>`;
+  try {
+    const rows = await listDatabaseUpdates();
+    const active = rows.filter(r => r.status !== "applied");
+    const applied = rows.filter(r => r.status === "applied");
+    activeEl.innerHTML = active.length ? active.map(dbUpdateCardHtml).join("") : `<div class="empty">No pending database updates. You're all caught up.</div>`;
+    appliedEl.innerHTML = applied.length ? applied.map(dbUpdateCardHtml).join("") : `<div class="empty">No applied updates yet.</div>`;
+    wireDatabaseUpdateActions();
+  } catch (e) {
+    activeEl.innerHTML = `<div class="err">${e.message}</div>`;
+    appliedEl.innerHTML = "";
+  }
+}
+function wireDatabaseUpdateActions() {
+  document.querySelectorAll("[data-dbu-copy]").forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.dataset.dbuCopy;
+      const pre = document.getElementById(`dbuSql-${id}`);
+      const text = pre ? pre.textContent : "";
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        const ta = document.createElement("textarea");
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        document.execCommand("copy"); ta.remove();
+      }
+      const original = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => { btn.textContent = original; }, 1500);
+    };
+  });
+  document.querySelectorAll("[data-dbu-run]").forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.dataset.dbuRun;
+      const msgEl = document.getElementById(`dbuCardMsg-${id}`);
+      const pwField = document.getElementById("dbuRunPw");
+      const password = pwField ? pwField.value : "";
+      msgEl.innerHTML = "";
+      if (!confirm("Run this SQL now against your live database? Only do this if you've reviewed it.")) return;
+      btn.disabled = true; const original = btn.textContent; btn.textContent = "Running…";
+      try {
+        const result = await runDatabaseUpdate(id, password);
+        if (result && result.status === "applied") {
+          msgEl.innerHTML = `<div class="msg-ok">Applied successfully.</div>`;
+        } else if (result && result.status === "failed") {
+          msgEl.innerHTML = `<div class="err">${result.error_message || "The migration failed."}</div>`;
+        }
+        loadDatabaseUpdates();
+      } catch (e) {
+        btn.disabled = false; btn.textContent = original;
+        msgEl.innerHTML = `<div class="err">${e.message}</div>`;
+      }
+    };
+  });
+  document.querySelectorAll("[data-dbu-applied]").forEach(btn => {
+    btn.onclick = async () => {
+      try { await markDatabaseUpdateApplied(btn.dataset.dbuApplied); loadDatabaseUpdates(); }
+      catch (e) { alert(e.message); }
+    };
+  });
+  document.querySelectorAll("[data-dbu-failed]").forEach(btn => {
+    btn.onclick = async () => {
+      const msg = prompt("What error did Supabase return? (shown on this update until it's re-run successfully)") || "";
+      try { await markDatabaseUpdateFailed(btn.dataset.dbuFailed, msg); loadDatabaseUpdates(); }
+      catch (e) { alert(e.message); }
+    };
+  });
+  document.querySelectorAll("[data-dbu-delete]").forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm("Remove this applied update from history? This can't be undone.")) return;
+      try { await deleteDatabaseUpdate(btn.dataset.dbuDelete); loadDatabaseUpdates(); }
+      catch (e) { alert(e.message); }
+    };
+  });
+}
+function renderDatabaseUpdates() {
+  app().innerHTML = `
+    <div class="wrap">
+      ${topBarHtml()}
+      ${navTabs("dbupdates")}
+      <div class="card">
+        <div class="section-title">Add a database update</div>
+        <div class="tiny-note" style="margin-bottom:8px;">Register a new SQL migration here whenever a feature needs one — it'll show up as Pending until you copy it into Supabase's SQL Editor and mark it Applied.</div>
+        <div id="dbuAddMsg"></div>
+        <div class="field"><label>Title</label><input id="dbuTitle" placeholder="e.g. Add attendance streaks table" /></div>
+        <div class="field"><label>Description (optional)</label><input id="dbuDesc" placeholder="What this migration does and why" /></div>
+        <div class="field"><label>SQL code</label><textarea id="dbuSqlInput" rows="6" placeholder="alter table ..."></textarea></div>
+        <button class="btn btn-primary btn-sm" id="dbuAddBtn">Add update</button>
+      </div>
+      <div class="card">
+        <div class="section-title">Pending &amp; failed</div>
+        <div class="tiny-note" style="margin-bottom:8px;">Either copy the SQL and run it yourself in Supabase → SQL Editor, then mark it Applied — or enter your password below and tap "Run now" on an update to have it applied automatically. Only run things you've reviewed. Failed updates stay here — with the error shown — until they're re-run successfully.</div>
+        <div class="field" style="max-width:320px;"><label>Your password (for Run now)</label><input id="dbuRunPw" type="password" placeholder="Required only for Run now" /></div>
+        <div id="dbuActiveList" class="tiny-note">Loading…</div>
+      </div>
+      <div class="card">
+        <div class="section-title">Applied (history)</div>
+        <div id="dbuAppliedList" class="tiny-note">Loading…</div>
+      </div>
+    </div>`;
+  wireTopBar();
+  wireNavTabs();
+  loadDatabaseUpdates();
+  document.getElementById("dbuAddBtn").onclick = async () => {
+    const msg = document.getElementById("dbuAddMsg"); msg.innerHTML = "";
+    const title = document.getElementById("dbuTitle").value.trim();
+    const desc = document.getElementById("dbuDesc").value.trim();
+    const sqlCode = document.getElementById("dbuSqlInput").value.trim();
+    try {
+      if (!title) throw new Error("Enter a title.");
+      if (!sqlCode) throw new Error("Enter the SQL code.");
+      await addDatabaseUpdate(title, sqlCode, desc);
+      document.getElementById("dbuTitle").value = "";
+      document.getElementById("dbuDesc").value = "";
+      document.getElementById("dbuSqlInput").value = "";
+      loadDatabaseUpdates();
+    } catch (e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
+  };
+}
+
 function render() {
   if (!motherAdmin) { renderLogin(); return; }
   if (view === "settings") renderSettings();
@@ -4103,6 +4396,7 @@ function render() {
   else if (view === "comms") renderComms();
   else if (view === "updates") renderUpdates();
   else if (view === "security") renderSecurity();
+  else if (view === "dbupdates") renderDatabaseUpdates();
   else renderDashboard();
 }
 /* ---------------- Keyboard-aware form scrolling ----------------
