@@ -1049,191 +1049,23 @@ end;
 $$;
 grant execute on function delete_school_completely(text,text,uuid) to anon, authenticated;`;
 
-/* ---------------- FORMAT & ID UPGRADE (run once, after SCHOOL_DANGER_ZONE_SQL) ----------------
-   Two things for schools created before self-registration existed (back when
-   createSchool() only wrote a bare `name` — no school_code, no location, no
-   school password):
 
-   - migrate_school_format(): brings an old-format school up to date with the
-     fields register_school() now sets for every new school — a unique
-     school_code (auto-generated the same way register_school() does one, if
-     you don't supply one), motto, village, subcounty, district, size_range,
-     and a school login password. Every field is OPTIONAL and NEVER
-     overwrites something already set — it only fills in columns that are
-     currently null/blank. The school's id, and everything linked to it
-     (students, staff, fees, exams...) is completely untouched.
-
-   - change_school_id(): for the rarer case where the id itself needs to
-     change (e.g. replacing a placeholder/duplicate id). Copies the school's
-     row to the new id, repoints every table that references the old id
-     (the same table list purge_school_data() uses, plus school_payments,
-     school_support_requests, school_login_log, platform_error_log, and any
-     mother_announcements targeted at it), then removes the old id. Runs as
-     one transaction — either everything moves over, or nothing does. */
-const MOTHER_FORMAT_SQL = `-- Fills in the "new format" fields on an old-format school without
--- touching anything already set, and without touching the school's id or
--- any of its linked data.
-drop function if exists migrate_school_format(text,text,uuid,text,text,text,text,text,text,text) cascade;
-create function migrate_school_format(
-  p_actor_username text, p_actor_password text, p_school_id uuid,
-  p_school_code text default null, p_motto text default null,
-  p_village text default null, p_subcounty text default null, p_district text default null,
-  p_size_range text default null, p_password text default null
-) returns schools language plpgsql security definer as $$
-declare actor mother_admins; s schools; candidate_code text;
-begin
-  select * into actor from mother_admins where username = p_actor_username;
-  if actor.id is null or crypt(p_actor_password, actor.password_hash) <> actor.password_hash then
-    raise exception 'Your password could not be verified.';
-  end if;
-  if actor.active is not true then
-    raise exception 'Your account is deactivated.';
-  end if;
-
-  select * into s from schools where id = p_school_id;
-  if s.id is null then
-    raise exception 'School not found.';
-  end if;
-
-  -- School ID (code): only touch it if it's currently missing. If the
-  -- caller didn't supply one either, generate one the same way
-  -- register_school() does — TATNOVA plus 7 random digits, retried
-  -- until unique.
-  if s.school_code is null or trim(s.school_code) = '' then
-    if p_school_code is not null and trim(p_school_code) <> '' then
-      if exists (select 1 from schools where school_code = p_school_code and id <> p_school_id) then
-        raise exception 'That School ID (code) is already taken by another school.';
-      end if;
-      if p_school_code !~ '^[A-Za-z0-9_]+$' then
-        raise exception 'School ID (code) can only contain letters, numbers and underscores.';
-      end if;
-      update schools set school_code = p_school_code where id = p_school_id;
-    else
-      loop
-        candidate_code := 'TATNOVA' || lpad(floor(random() * 10000000)::text, 7, '0');
-        exit when not exists (select 1 from schools where school_code = candidate_code);
-      end loop;
-      update schools set school_code = candidate_code where id = p_school_id;
-    end if;
-  end if;
-
-  update schools set
-    motto      = case when (motto is null or trim(motto) = '')           and p_motto is not null      and trim(p_motto) <> ''      then trim(p_motto)      else motto end,
-    village    = case when (village is null or trim(village) = '')       and p_village is not null    and trim(p_village) <> ''    then trim(p_village)    else village end,
-    subcounty  = case when (subcounty is null or trim(subcounty) = '')   and p_subcounty is not null  and trim(p_subcounty) <> ''  then trim(p_subcounty)  else subcounty end,
-    district   = case when (district is null or trim(district) = '')     and p_district is not null   and trim(p_district) <> ''   then trim(p_district)   else district end,
-    size_range = case when (size_range is null or trim(size_range) = '') and p_size_range is not null and trim(p_size_range) <> '' then trim(p_size_range) else size_range end
-  where id = p_school_id;
-
-  if (s.password_hash is null) and p_password is not null and length(p_password) >= 6 then
-    update schools set password_hash = crypt(p_password, gen_salt('bf')) where id = p_school_id;
-  elsif (s.password_hash is null) and p_password is not null and length(p_password) < 6 then
-    raise exception 'School password must be at least 6 characters.';
-  end if;
-
-  insert into audit_log (actor_username, action, target_type, target_id, details)
-  values (p_actor_username, 'migrate_school_format', 'school', p_school_id::text, 'migrated "' || coalesce(s.name,'') || '" to the new registration format');
-
-  select * into s from schools where id = p_school_id;
-  return s;
-end;
-$$;
-grant execute on function migrate_school_format(text,text,uuid,text,text,text,text,text,text,text) to anon, authenticated;
-
--- Changes a school's id, moving every row that references it along with it.
--- Full-access admins only. Runs as one transaction.
-drop function if exists change_school_id(text,text,uuid,uuid) cascade;
-create function change_school_id(p_actor_username text, p_actor_password text, p_old_id uuid, p_new_id uuid)
-returns schools language plpgsql security definer as $$
-declare actor mother_admins; old_row schools; t text; result_row schools;
-begin
-  select * into actor from mother_admins where username = p_actor_username;
-  if actor.id is null or crypt(p_actor_password, actor.password_hash) <> actor.password_hash then
-    raise exception 'Your password could not be verified.';
-  end if;
-  if actor.active is not true then
-    raise exception 'Your account is deactivated.';
-  end if;
-  if actor.role <> 'full_access' then
-    raise exception 'Only full-access admins can change a school ID.';
-  end if;
-
-  if p_old_id is null or p_new_id is null then
-    raise exception 'Both the current and new ID are required.';
-  end if;
-  if p_old_id = p_new_id then
-    raise exception 'New ID must be different from the current ID.';
-  end if;
-
-  select * into old_row from schools where id = p_old_id;
-  if old_row.id is null then
-    raise exception 'School not found.';
-  end if;
-  if exists (select 1 from schools where id = p_new_id) then
-    raise exception 'That ID is already in use by another school.';
-  end if;
-
-  -- Bypass foreign-key/trigger ordering for this transaction only, same as
-  -- purge_school_data(), so the old row can be removed once everything that
-  -- pointed to it has been repointed.
-  set local session_replication_role = replica;
-
-  old_row.id := p_new_id;
-  insert into schools select (old_row).*;
-
-  foreach t in array array[
-    -- Every table the school app scopes by school_id (kept in sync with the
-    -- list in purge_school_data() above), plus the mother-system-owned
-    -- tables that also carry a school_id.
-    'parent_messages','private_messages','parent_students','fee_reminders','account_change_requests',
-    'exam_results','attendance','staff_attendance','fee_payments','fee_structures',
-    'exams','exam_types','grades','class_subjects','subjects','classes','terms',
-    'school_communications','school_meetings','school_settings',
-    'students','teachers','profiles',
-    'school_payments','school_support_requests','school_login_log','platform_error_log'
-  ]
-  loop
-    if to_regclass(t) is not null
-       and exists (
-         select 1 from information_schema.columns
-         where table_schema = 'public' and table_name = t and column_name = 'school_id'
-       )
-    then
-      execute format('update %I set school_id = %L where school_id = %L', t, p_new_id, p_old_id);
-    end if;
-  end loop;
-
-  -- Announcements can target a school inside an array column rather than a
-  -- plain school_id foreign key.
-  if to_regclass('mother_announcements') is not null then
-    update mother_announcements
-    set target_school_ids = array_replace(target_school_ids, p_old_id, p_new_id)
-    where target_school_ids @> array[p_old_id];
-  end if;
-
-  delete from schools where id = p_old_id;
-
-  insert into audit_log (actor_username, action, target_type, target_id, details)
-  values (p_actor_username, 'change_school_id', 'school', p_new_id::text, 'school ID changed from ' || p_old_id::text || ' to ' || p_new_id::text || ' for "' || coalesce(old_row.name,'') || '"');
-
-  select * into result_row from schools where id = p_new_id;
-  return result_row;
-end;
-$$;
-grant execute on function change_school_id(text,text,uuid,uuid) to anon, authenticated;`;
-
-/* ---------------- SCHOOL SELF-UPGRADE UPGRADE (run once, after FORMAT_ID_SQL) ----------------
-   A second, self-service path onto the same "new format" fields migrate_school_format()
-   fills in above — except here the SCHOOL fills in its own form instead of a mother
-   admin doing it on their behalf:
+/* ---------------- SCHOOL SELF-UPGRADE UPGRADE (run once, after SCHOOL_DANGER_ZONE_SQL) ----------------
+   Brings a school created before self-registration existed (back when
+   createSchool() only wrote a bare `name` — no school_code, motto, location,
+   or school password) up onto the current registration format, entirely
+   self-service, with no mother-admin data entry and no ability to change a
+   school's id:
      1) Mother marks an old-format school "Upgrade Available" (mark_school_upgrade_available).
      2) The school's own Administrator sees this inside the school app (bell notification +
         Settings) and submits a School Registration Form there.
      3) complete_school_upgrade() — called from the SCHOOL APP, verified against the acting
-        Administrator's own login, not a mother admin's — fills in the same fields
-        migrate_school_format() does (never overwriting anything already set) and stamps
-        the school upgraded. All existing data (students, staff, parents, fees, attendance,
-        exams, report cards, settings) is completely untouched; only the schools row changes.
+        Administrator's own login, not a mother admin's — auto-generates a unique School ID
+        (TATNOVA followed by 7 random digits, retried until unique) and fills in motto,
+        village, subcounty, district, size_range and a school login password, never
+        overwriting anything already set. All existing data (students, staff, parents, fees,
+        attendance, exams, report cards, settings) is completely untouched; only the schools
+        row changes, and the school's id itself never changes.
    Two timestamp columns give the Mother App three states to show per school:
      - No upgrade         : upgrade_requested_at is null
      - Pending upgrade     : upgrade_requested_at is set, upgrade_completed_at is null
@@ -1864,19 +1696,6 @@ async function deleteSchoolCompletely(schoolId, password) {
     p_actor_username: motherAdmin.username, p_actor_password: password, p_school_id: schoolId,
   }) });
 }
-// Fills in the "new format" fields (School ID/code, motto, location, school
-// password) on an old-format school. Never overwrites anything already set.
-async function migrateSchoolFormat(schoolId, fields, password) {
-  assertFullAccess();
-  if (!motherAdmin) throw new Error("Not signed in.");
-  if (!password) throw new Error("Enter your password to confirm.");
-  return sb(`/rest/v1/rpc/migrate_school_format`, { method:"POST", body: JSON.stringify({
-    p_actor_username: motherAdmin.username, p_actor_password: password, p_school_id: schoolId,
-    p_school_code: fields.schoolCode || null, p_motto: fields.motto || null,
-    p_village: fields.village || null, p_subcounty: fields.subcounty || null, p_district: fields.district || null,
-    p_size_range: fields.sizeRange || null, p_password: fields.password || null,
-  }) });
-}
 // Marks an old-format school "Upgrade Available" — its own Administrator
 // will see a prompt inside the school app to complete the form themselves.
 async function markSchoolUpgradeAvailable(schoolId, password) {
@@ -1910,16 +1729,6 @@ function schoolUpgradeBadge(s) {
   if (st === "pending") return `<span class="badge badge-pending">Upgrade pending</span>`;
   if (st === "completed") return `<span class="badge badge-active">Upgraded</span>`;
   return "";
-}
-// Moves a school (and everything linked to it) from one id to another.
-// Full-access admins only. Irreversible.
-async function changeSchoolId(oldId, newId, password) {
-  assertFullAccess();
-  if (!motherAdmin) throw new Error("Not signed in.");
-  if (!password) throw new Error("Enter your password to confirm.");
-  return sb(`/rest/v1/rpc/change_school_id`, { method:"POST", body: JSON.stringify({
-    p_actor_username: motherAdmin.username, p_actor_password: password, p_old_id: oldId, p_new_id: newId,
-  }) });
 }
 async function bulkSetSchoolStatus(ids, status) {
   assertFullAccess();
@@ -2403,12 +2212,8 @@ function renderLogin() {
           <p class="tiny-note">Run this once too to unlock the Risk &amp; Retention tab — per-school engagement metrics. Safe to re-run.</p>
           <pre>${RISK_ALERTS_SQL}</pre>
         </details>
-        <details style="margin-top:10px;"><summary>Upgrade: migrate old-format schools &amp; change a school ID</summary>
-          <p class="tiny-note">Run this once too (needs the Danger Zone script above already run) to unlock the "Format &amp; ID" tab on each school's page — fill in the School ID (code), motto and location for schools created before self-registration existed, and change a school's id if it ever needs to. Safe to re-run.</p>
-          <pre>${MOTHER_FORMAT_SQL}</pre>
-        </details>
-        <details style="margin-top:10px;"><summary>Upgrade: school self-upgrade (Upgrade Available notification)</summary>
-          <p class="tiny-note">Run this once too (needs the Format &amp; ID script above already run) to let you mark an old-format school "Upgrade Available" from its Format &amp; ID tab — the school's own Administrator then completes a short form inside the school app itself instead of you filling it in for them. Safe to re-run.</p>
+        <details style="margin-top:10px;"><summary>Upgrade: school self-upgrade (migrate old-format schools)</summary>
+          <p class="tiny-note">Run this once (needs the Danger Zone script above already run) to unlock the "Format &amp; ID" tab on each school's page — mark an old-format school "Upgrade Available" from there, and its own Administrator completes a short form inside the school app itself, which auto-generates their School ID (TATNOVA + 7 digits). Safe to re-run.</p>
           <pre>${MOTHER_SELF_UPGRADE_SQL}</pre>
         </details>
       </div>
@@ -2840,12 +2645,8 @@ function renderSettingsDatabaseTab() {
         <p class="tiny-note">If the Risk &amp; Retention tab errors out, run this once in Supabase → SQL Editor.</p>
         <pre>${RISK_ALERTS_SQL}</pre>
       </details>
-      <details style="margin-top:8px;"><summary>Upgrade: migrate old-format schools &amp; change a school ID</summary>
-        <p class="tiny-note">If the "Format &amp; ID" tab on a school's page errors out, run this once in Supabase → SQL Editor.</p>
-        <pre>${MOTHER_FORMAT_SQL}</pre>
-      </details>
-      <details style="margin-top:8px;"><summary>Upgrade: school self-upgrade (Upgrade Available notification)</summary>
-        <p class="tiny-note">If "Mark Upgrade Available" on the "Format &amp; ID" tab errors out, run this once in Supabase → SQL Editor.</p>
+      <details style="margin-top:8px;"><summary>Upgrade: school self-upgrade (migrate old-format schools)</summary>
+        <p class="tiny-note">If the "Format &amp; ID" tab on a school's page, or "Mark Upgrade Available", errors out, run this once in Supabase → SQL Editor.</p>
         <pre>${MOTHER_SELF_UPGRADE_SQL}</pre>
       </details>
     </div>`;
@@ -3387,7 +3188,7 @@ function renderSchoolFormatTab(s) {
   const upgradeCardHtml = isOldFormat ? `
     <div class="card">
       <div class="section-title">School self-upgrade</div>
-      <div class="tiny-note" style="margin-bottom:10px;">Instead of filling the fields below yourself, you can mark this school "Upgrade Available" — its own Administrator will then see a prompt inside the school app and complete a short registration form themselves. Existing data is never touched either way.</div>
+      <div class="tiny-note" style="margin-bottom:10px;">This school was created before self-registration existed, so it's missing a School ID — staff/parents can't self-signup for it yet. Mark it "Upgrade Available" and its own Administrator will see a prompt inside the school app to fill in a short registration form themselves. Their School ID is generated automatically (TATNOVA + 7 digits) once they submit it. Existing data is never touched.</div>
       <div id="upgradeMsg"></div>
       <div class="view-row"><div class="vlabel">Status</div><div class="vvalue">
         ${upgradeStatus === "pending" ? `<span class="badge badge-pending">Pending upgrade</span> <span class="tiny-note">Requested ${new Date(s.upgrade_requested_at).toLocaleString()} — waiting on the school.</span>`
@@ -3401,46 +3202,17 @@ function renderSchoolFormatTab(s) {
         <div class="field" style="margin-top:10px;"><label>Your password (to confirm)</label><input id="upgConfirmPw" type="password" /></div>
         <button class="btn btn-ghost btn-sm" id="upgCancelBtn">Cancel upgrade request</button>
       `}
-    </div>` : "";
-  mount.innerHTML = `
-    ${upgradeCardHtml}
+    </div>` : `
     <div class="card">
       <div class="section-title">Registration format</div>
-      ${isOldFormat
-        ? `<div class="tiny-note" style="margin-bottom:10px;color:var(--red-dark, #b42318);">This school was created before self-registration existed, so it's missing a School ID (code) — staff/parents can't self-signup for it yet. Fill in what you have below yourself, or use "School self-upgrade" above to have the school do it. Anything left blank stays untouched, and existing data is never affected.</div>`
-        : `<div class="tiny-note" style="margin-bottom:10px;">This school is already in the current format. Any fields still blank below can be filled in the same way — nothing already set will be overwritten.</div>`}
-      <div id="formatMsg"></div>
-      <div class="field">
-        <label>School ID (code)${s.school_code ? " — set" : " — missing"}</label>
-        <input id="fmtSchoolCode" placeholder="${s.school_code || "Leave blank to auto-generate one"}" ${s.school_code ? "disabled" : ""} value="${s.school_code || ""}" />
-      </div>
-      <div class="field"><label>Motto</label><input id="fmtMotto" placeholder="${s.motto ? "" : "Not set"}" value="${s.motto || ""}" ${s.motto ? "disabled" : ""} /></div>
-      <div class="field"><label>Village</label><input id="fmtVillage" value="${s.village || ""}" ${s.village ? "disabled" : ""} /></div>
-      <div class="field"><label>Subcounty</label><input id="fmtSubcounty" value="${s.subcounty || ""}" ${s.subcounty ? "disabled" : ""} /></div>
-      <div class="field"><label>District</label><input id="fmtDistrict" value="${s.district || ""}" ${s.district ? "disabled" : ""} /></div>
-      <div class="field"><label>Size range</label><input id="fmtSizeRange" value="${s.size_range || ""}" ${s.size_range ? "disabled" : ""} /></div>
-      <div class="field">
-        <label>School login password${s.password_hash ? " — set" : " — missing"}</label>
-        <input id="fmtPassword" type="password" placeholder="${s.password_hash ? "Already set" : "Min 6 characters"}" ${s.password_hash ? "disabled" : ""} />
-      </div>
-      <div class="field"><label>Your password (to confirm)</label><input id="fmtConfirmPw" type="password" /></div>
-      <button class="btn btn-primary btn-sm" id="fmtSaveBtn">Save / migrate to new format</button>
-    </div>
-    <div class="card card-danger">
-      <div class="section-title" style="color:var(--red-dark);">Change School ID</div>
-      <div class="tiny-note" style="margin-bottom:10px;">Moves this school — and every student, staff, fee, exam and message linked to it — to a new id. There is no undo. Most schools never need this; it's here for fixing a duplicate or placeholder id.</div>
-      <div class="field"><label>Current ID</label><input value="${s.id}" disabled /></div>
-      <div class="field">
-        <label>New ID</label>
-        <div class="row" style="gap:6px;">
-          <input id="fmtNewId" placeholder="00000000-0000-0000-0000-000000000000" style="flex:1;" />
-          <button class="btn btn-ghost btn-sm" id="fmtGenIdBtn" type="button">Generate</button>
-        </div>
-      </div>
-      <div class="field"><label>Type "${s.name}" to confirm</label><input id="fmtIdConfirmName" placeholder="${s.name}" /></div>
-      <div class="field"><label>Your password</label><input id="fmtIdConfirmPw" type="password" /></div>
-      <button class="btn btn-danger btn-sm" id="fmtChangeIdBtn" disabled>Change School ID</button>
+      <div class="tiny-note" style="margin-bottom:10px;">This school is on the current registration format. Its School ID is auto-generated and can't be edited here — it's visible to the school's own Administrators inside the school app under Settings.</div>
+      <div class="view-row"><div class="vlabel">School ID</div><div class="vvalue" style="font-family:monospace;font-weight:700;">${s.school_code}</div></div>
+      ${s.motto ? `<div class="view-row"><div class="vlabel">Motto</div><div class="vvalue">${s.motto}</div></div>` : ""}
+      ${(s.village || s.subcounty || s.district) ? `<div class="view-row"><div class="vlabel">Location</div><div class="vvalue">${[s.village, s.subcounty, s.district].filter(Boolean).join(", ")}</div></div>` : ""}
+      ${s.size_range ? `<div class="view-row"><div class="vlabel">Size range</div><div class="vvalue">${s.size_range}</div></div>` : ""}
+      ${s.upgrade_completed_at ? `<div class="view-row"><div class="vlabel">Upgraded on</div><div class="vvalue">${new Date(s.upgrade_completed_at).toLocaleString()}</div></div>` : ""}
     </div>`;
+  mount.innerHTML = upgradeCardHtml;
 
   const upgMarkBtn = document.getElementById("upgMarkBtn");
   if (upgMarkBtn) upgMarkBtn.onclick = async () => {
@@ -3459,50 +3231,6 @@ function renderSchoolFormatTab(s) {
       const pw = document.getElementById("upgConfirmPw").value;
       await cancelSchoolUpgradeRequest(s.id, pw);
       msg.innerHTML = `<div class="msg-ok">Cancelled.</div>`;
-      renderSchoolDetail();
-    } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
-  };
-
-  document.getElementById("fmtSaveBtn").onclick = async () => {
-    const msg = document.getElementById("formatMsg"); msg.innerHTML = "";
-    try {
-      const pw = document.getElementById("fmtConfirmPw").value;
-      const updated = await migrateSchoolFormat(s.id, {
-        schoolCode: document.getElementById("fmtSchoolCode").value.trim(),
-        motto: document.getElementById("fmtMotto").value.trim(),
-        village: document.getElementById("fmtVillage").value.trim(),
-        subcounty: document.getElementById("fmtSubcounty").value.trim(),
-        district: document.getElementById("fmtDistrict").value.trim(),
-        sizeRange: document.getElementById("fmtSizeRange").value.trim(),
-        password: document.getElementById("fmtPassword").value,
-      }, pw);
-      msg.innerHTML = `<div class="msg-ok">Saved. School ID (code): ${updated.school_code || "—"}</div>`;
-      renderSchoolDetail();
-    } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
-  };
-
-  const genIdBtn = document.getElementById("fmtGenIdBtn");
-  genIdBtn.onclick = () => {
-    document.getElementById("fmtNewId").value = crypto.randomUUID();
-    idUpdateState();
-  };
-  const idName = document.getElementById("fmtIdConfirmName");
-  const idPw = document.getElementById("fmtIdConfirmPw");
-  const newIdInput = document.getElementById("fmtNewId");
-  const changeIdBtn = document.getElementById("fmtChangeIdBtn");
-  const idUpdateState = () => {
-    const nameMatches = idName.value.trim().toLowerCase() === (s.name || "").trim().toLowerCase();
-    changeIdBtn.disabled = !nameMatches || !newIdInput.value.trim();
-  };
-  idName.oninput = idUpdateState;
-  newIdInput.oninput = idUpdateState;
-  changeIdBtn.onclick = async () => {
-    const msg = document.getElementById("formatMsg"); msg.innerHTML = "";
-    if (!confirm(`Permanently move "${s.name}" to a new ID? Every record linked to it moves too. This cannot be undone.`)) return;
-    try {
-      const updated = await changeSchoolId(s.id, newIdInput.value.trim(), idPw.value);
-      currentSchoolId = updated.id;
-      msg.innerHTML = `<div class="msg-ok">School ID changed. Reloading…</div>`;
       renderSchoolDetail();
     } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
   };
