@@ -1694,6 +1694,9 @@ let auditLogItems = [];
 let auditLogShowAll = false;
 let selectedSchoolIds = new Set(); // dashboard bulk-select state
 let pendingAnnounceTargets = null; // school ids handed off from Dashboard bulk action to the Comms composer
+let schoolSearchTerm = ""; // dashboard schools-table search box
+let auditLogActorFilter = ""; // "" = all admins
+let supportStatusFilter = "open"; // "open" | "resolved" | "all", Comms → Support requests
 const DEPT_LABELS = { administration:"Administrators", academic:"Academic", finance:"Finance" };
 let loginActivityItems = [];
 let loginActivityShowAll = false;
@@ -1980,6 +1983,70 @@ function exportSchoolsCSV(schools) {
     { label:"Registered", get:s=>s.created_at ? new Date(s.created_at).toLocaleString() : "" },
   ]);
   downloadCSV(`nova-schools-${new Date().toISOString().slice(0,10)}.csv`, csv);
+}
+// Minimal RFC4180-ish CSV parser: handles quoted fields, escaped quotes ("")
+// and commas/newlines inside quotes. Good enough for a small admin-authored
+// import file, not meant as a general-purpose CSV library.
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], next = text[i+1];
+    if (inQuotes) {
+      if (c === '"' && next === '"') { field += '"'; i++; }
+      else if (c === '"') { inQuotes = false; }
+      else { field += c; }
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ""; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && next === '\n') i++;
+        row.push(field); field = "";
+        if (row.some(v => v !== "")) rows.push(row);
+        row = [];
+      } else field += c;
+    }
+  }
+  if (field !== "" || row.length) { row.push(field); if (row.some(v => v !== "")) rows.push(row); }
+  if (!rows.length) return [];
+  const header = rows[0].map(h => h.trim().toLowerCase());
+  return rows.slice(1).map(r => {
+    const obj = {};
+    header.forEach((h, i) => { obj[h] = (r[i] || "").trim(); });
+    return obj;
+  });
+}
+// Bulk-registers schools from a CSV with a "name" column (required) and
+// optional "plan" / "billing cycle" / "amount" / "expires on" columns —
+// same shape exportSchoolsCSV() produces, so a round trip just works.
+// Each row goes through the normal createSchool()/savePlan() calls (so
+// audit-log entries and validation are identical to adding one by hand);
+// one bad row doesn't stop the rest, and a summary is reported at the end.
+async function importSchoolsCSV(csvText) {
+  assertFullAccess();
+  const rows = parseCSV(csvText);
+  if (!rows.length) throw new Error("No rows found in that file.");
+  let created = 0;
+  const errors = [];
+  for (const r of rows) {
+    const name = r.name || r["school name"] || "";
+    if (!name) { errors.push(`Row skipped: missing name (${JSON.stringify(r)})`); continue; }
+    try {
+      const result = await createSchool(name);
+      const school = Array.isArray(result) ? result[0] : result;
+      const plan = r.plan || "";
+      const billingCycle = r["billing cycle"] || r.cycle || "";
+      const amount = r["subscription amount"] || r.amount || "";
+      const expiresAt = r["expires on"] || r.expires || "";
+      if (school && (plan || billingCycle || amount || expiresAt)) {
+        await savePlan(school.id, { plan, billingCycle, amount, expiresAt });
+      }
+      created++;
+    } catch (e) { errors.push(`${name}: ${e.message}`); }
+  }
+  const summary = `Imported ${created} of ${rows.length} school(s).` + (errors.length ? `\n\nSkipped/failed:\n${errors.join("\n")}` : "");
+  alert(summary);
+  return { created, total: rows.length, errors };
 }
 
 async function getSchool(id) {
@@ -2575,7 +2642,14 @@ async function renderDashboard() {
       <div class="card">
         <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
           <div class="section-title" style="margin:0;">Schools</div>
-          <button class="btn btn-sm" id="exportCsvBtn" style="background:var(--panel-2);">Export CSV</button>
+          <div class="row" style="gap:6px;">
+            <button class="btn btn-sm" id="importCsvBtn" style="background:var(--panel-2);">Import CSV</button>
+            <input type="file" id="importCsvFile" accept=".csv" style="display:none;" />
+            <button class="btn btn-sm" id="exportCsvBtn" style="background:var(--panel-2);">Export CSV</button>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <input id="schoolSearchInput" placeholder="Search by school, admin name, username, phone or email…" value="${schoolSearchTerm.replace(/"/g,'&quot;')}" />
         </div>
         <div id="bulkBar" style="display:none;margin:10px 0;padding:10px;border-radius:10px;background:var(--panel-2);" class="row">
           <span id="bulkCount" class="tiny-note" style="margin-right:auto;"></span>
@@ -2617,6 +2691,23 @@ async function loadSchools() {
   const pendingCard = document.getElementById("pendingCard");
   const pendingList = document.getElementById("pendingList");
   const exportBtn = document.getElementById("exportCsvBtn");
+  const searchInput = document.getElementById("schoolSearchInput");
+  if (searchInput) {
+    searchInput.oninput = () => { schoolSearchTerm = searchInput.value; renderSchoolsTableOnly(); };
+  }
+  const importBtn = document.getElementById("importCsvBtn");
+  const importFile = document.getElementById("importCsvFile");
+  if (importBtn && importFile) {
+    importBtn.onclick = () => { if (isFullAccess()) importFile.click(); else alert("Read-only accounts can't import schools."); };
+    importFile.onchange = async () => {
+      const file = importFile.files[0];
+      importFile.value = "";
+      if (!file) return;
+      const text = await file.text();
+      try { await importSchoolsCSV(text); loadSchools(); }
+      catch(e) { alert(e.message); }
+    };
+  }
   purgeExpiredTrashedSchools(); // fire-and-forget: finalizes any school whose 30-day Trash window already passed
   try {
     const allSchools = await listSchools();
@@ -2704,76 +2795,90 @@ async function loadSchools() {
       } else { rejectedCard.style.display = "none"; }
     }
 
-    const rest = schools.filter(s => s.status !== "pending" && s.status !== "rejected");
-    if (!rest.length) { listEl.innerHTML = `<div class="tiny-note">No approved schools yet.</div>`; return; }
-    const restIds = new Set(rest.map(s => s.id));
-    Array.from(selectedSchoolIds).forEach(id => { if (!restIds.has(id)) selectedSchoolIds.delete(id); });
-    const sizeLabel = (s) => s.size_range || "—";
-    const adminContact = (s) => {
-      const a = s.first_admin;
-      if (!a) return "—";
-      const bits = [a.username ? "@"+a.username : null, a.phone, a.email].filter(Boolean);
-      return bits.length ? bits.join(" · ") : "—";
-    };
-    listEl.innerHTML = `<div class="table-scroll"><table class="mini-table schools-table">
-      <thead><tr>
-        <th></th>
-        <th>Logo</th>
-        <th class="name-cell">School Name</th>
-        <th>Location</th>
-        <th>Size</th>
-        <th class="name-cell">First Administrator</th>
-        <th class="contact-cell">Administrator Contact</th>
-        <th>Status</th>
-      </tr></thead>
-      <tbody>
-        ${rest.map(s => `
-          <tr class="clickable" data-open="${s.id}">
-            <td onclick="event.stopPropagation();"><input type="checkbox" class="schoolSelect" data-id="${s.id}" ${selectedSchoolIds.has(s.id)?'checked':''} style="width:16px;height:16px;" /></td>
-            <td>${schoolLogoHtml(s)}</td>
-            <td class="name-cell"><div class="school-name">${s.name}</div></td>
-            <td>${schoolLocationLabel(s) || "—"}</td>
-            <td>${sizeLabel(s)}</td>
-            <td class="name-cell">${s.first_admin ? `<div class="row" style="align-items:center;gap:8px;">${adminAvatarHtml(s.first_admin, 28)}<span>${s.first_admin.full_name}</span></div>` : "—"}</td>
-            <td class="contact-cell">${adminContact(s)}</td>
-            <td>${statusBadge(s.status)}${s.status==='active' ? ` ${subscriptionBadge(s)}` : ""} ${schoolUpgradeBadge(s)}</td>
-          </tr>`).join("")}
-      </tbody>
-    </table></div>`;
-    listEl.querySelectorAll("[data-open]").forEach(row => {
-      row.onclick = () => { currentSchoolId = row.dataset.open; schoolSubTab = "subscription"; view = "schoolDetail"; render(); };
-    });
-    listEl.querySelectorAll(".schoolSelect").forEach(cb => {
-      cb.onclick = (e) => e.stopPropagation();
-      cb.onchange = () => {
-        if (cb.checked) selectedSchoolIds.add(cb.dataset.id); else selectedSchoolIds.delete(cb.dataset.id);
-        updateBulkBar();
-      };
-    });
-    updateBulkBar();
-
-    const msgBtn = document.getElementById("bulkMessageBtn");
-    const activateBtn = document.getElementById("bulkActivateBtn");
-    const suspendBtn = document.getElementById("bulkSuspendBtn");
-    if (msgBtn) msgBtn.onclick = () => {
-      pendingAnnounceTargets = Array.from(selectedSchoolIds);
-      view = "comms"; render();
-    };
-    if (activateBtn) activateBtn.onclick = async () => {
-      if (!isFullAccess()) return;
-      if (!confirm(`Activate ${selectedSchoolIds.size} selected school(s)?`)) return;
-      await bulkSetSchoolStatus(Array.from(selectedSchoolIds), "active");
-      selectedSchoolIds.clear(); loadSchools();
-    };
-    if (suspendBtn) suspendBtn.onclick = async () => {
-      if (!isFullAccess()) return;
-      if (!confirm(`Suspend ${selectedSchoolIds.size} selected school(s)? They'll lose access until reactivated.`)) return;
-      await bulkSetSchoolStatus(Array.from(selectedSchoolIds), "suspended");
-      selectedSchoolIds.clear(); loadSchools();
-    };
+    lastApprovedSchools = schools.filter(s => s.status !== "pending" && s.status !== "rejected");
+    renderSchoolsTableOnly();
   } catch(e) {
     listEl.innerHTML = `<div class="err">${e.message}</div>`;
   }
+}
+
+let lastApprovedSchools = []; // cache of the last-loaded approved-schools list, so the search box can re-filter without a refetch
+function renderSchoolsTableOnly() {
+  const listEl = document.getElementById("schoolList");
+  if (!listEl) return;
+  if (!lastApprovedSchools.length) { listEl.innerHTML = `<div class="tiny-note">No approved schools yet.</div>`; return; }
+  const term = schoolSearchTerm.trim().toLowerCase();
+  const rest = term ? lastApprovedSchools.filter(s => {
+    const a = s.first_admin;
+    const haystack = [s.name, a?.full_name, a?.username, a?.phone, a?.email, a?.whatsapp].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(term);
+  }) : lastApprovedSchools;
+  if (!rest.length) { listEl.innerHTML = `<div class="tiny-note">No schools match "${schoolSearchTerm}".</div>`; return; }
+  const restIds = new Set(rest.map(s => s.id));
+  Array.from(selectedSchoolIds).forEach(id => { if (!restIds.has(id)) selectedSchoolIds.delete(id); });
+  const sizeLabel = (s) => s.size_range || "—";
+  const adminContact = (s) => {
+    const a = s.first_admin;
+    if (!a) return "—";
+    const bits = [a.username ? "@"+a.username : null, a.phone, a.email].filter(Boolean);
+    return bits.length ? bits.join(" · ") : "—";
+  };
+  listEl.innerHTML = `<div class="table-scroll"><table class="mini-table schools-table">
+    <thead><tr>
+      <th></th>
+      <th>Logo</th>
+      <th class="name-cell">School Name</th>
+      <th>Location</th>
+      <th>Size</th>
+      <th class="name-cell">First Administrator</th>
+      <th class="contact-cell">Administrator Contact</th>
+      <th>Status</th>
+    </tr></thead>
+    <tbody>
+      ${rest.map(s => `
+        <tr class="clickable" data-open="${s.id}">
+          <td onclick="event.stopPropagation();"><input type="checkbox" class="schoolSelect" data-id="${s.id}" ${selectedSchoolIds.has(s.id)?'checked':''} style="width:16px;height:16px;" /></td>
+          <td>${schoolLogoHtml(s)}</td>
+          <td class="name-cell"><div class="school-name">${s.name}</div></td>
+          <td>${schoolLocationLabel(s) || "—"}</td>
+          <td>${sizeLabel(s)}</td>
+          <td class="name-cell">${s.first_admin ? `<div class="row" style="align-items:center;gap:8px;">${adminAvatarHtml(s.first_admin, 28)}<span>${s.first_admin.full_name}</span></div>` : "—"}</td>
+          <td class="contact-cell">${adminContact(s)}</td>
+          <td>${statusBadge(s.status)}${s.status==='active' ? ` ${subscriptionBadge(s)}` : ""} ${schoolUpgradeBadge(s)}</td>
+        </tr>`).join("")}
+    </tbody>
+  </table></div>`;
+  listEl.querySelectorAll("[data-open]").forEach(row => {
+    row.onclick = () => { currentSchoolId = row.dataset.open; schoolSubTab = "subscription"; view = "schoolDetail"; render(); };
+  });
+  listEl.querySelectorAll(".schoolSelect").forEach(cb => {
+    cb.onclick = (e) => e.stopPropagation();
+    cb.onchange = () => {
+      if (cb.checked) selectedSchoolIds.add(cb.dataset.id); else selectedSchoolIds.delete(cb.dataset.id);
+      updateBulkBar();
+    };
+  });
+  updateBulkBar();
+
+  const msgBtn = document.getElementById("bulkMessageBtn");
+  const activateBtn = document.getElementById("bulkActivateBtn");
+  const suspendBtn = document.getElementById("bulkSuspendBtn");
+  if (msgBtn) msgBtn.onclick = () => {
+    pendingAnnounceTargets = Array.from(selectedSchoolIds);
+    view = "comms"; render();
+  };
+  if (activateBtn) activateBtn.onclick = async () => {
+    if (!isFullAccess()) return;
+    if (!confirm(`Activate ${selectedSchoolIds.size} selected school(s)?`)) return;
+    await bulkSetSchoolStatus(Array.from(selectedSchoolIds), "active");
+    selectedSchoolIds.clear(); loadSchools();
+  };
+  if (suspendBtn) suspendBtn.onclick = async () => {
+    if (!isFullAccess()) return;
+    if (!confirm(`Suspend ${selectedSchoolIds.size} selected school(s)? They'll lose access until reactivated.`)) return;
+    await bulkSetSchoolStatus(Array.from(selectedSchoolIds), "suspended");
+    selectedSchoolIds.clear(); loadSchools();
+  };
 }
 
 /* ---------------- TRASH (its own page, off Home) ----------------
@@ -3095,11 +3200,17 @@ async function renderSchoolDetail() {
         <div class="row" style="flex-wrap:wrap;margin-top:12px;">${statusActionsHtml(s)}</div>
       </div>
 
+      <div class="card" id="onboardingCard" style="display:none;">
+        <div class="section-title">Getting this school set up</div>
+        <div id="onboardingChecklist" class="tiny-note">Checking…</div>
+      </div>
+
       ${subTabsHtml(SCHOOL_TABS, schoolSubTab, "schooltab")}
       <div id="schoolTabContent"></div>
     </div>`;
 
   document.getElementById("backBtn").onclick = () => { view = "dashboard"; render(); };
+  renderOnboardingChecklist(s);
   wireTopBar();
   wireSubTabs("schooltab", (id) => { schoolSubTab = id; render(); });
 
@@ -3146,6 +3257,42 @@ async function renderSchoolDetail() {
   else if (schoolSubTab === "format") renderSchoolFormatTab(s);
   else if (schoolSubTab === "danger") renderSchoolDangerTab(s);
   else renderSchoolSubscriptionTab(s);
+}
+
+// Lightweight setup checklist so a newly-approved school doesn't quietly sit
+// half-configured — surfaces the handful of things worth doing right after
+// approval (plan, first payment, admin, features, profile). Purely derived
+// from data already on the school record / already-fetched payments, no new
+// table needed. Once everything's done the card just disappears — nothing
+// to dismiss, nothing left nagging on a school that's fully set up.
+async function renderOnboardingChecklist(s) {
+  const card = document.getElementById("onboardingCard");
+  const el = document.getElementById("onboardingChecklist");
+  if (!card || !el) return;
+  let hasPayment = false;
+  try { hasPayment = (await listPayments(s.id)).length > 0; } catch (e) {}
+  const items = [
+    { done: !!s.plan, label: "Set a subscription plan", goto: "subscription" },
+    { done: hasPayment, label: "Record the first payment", goto: "subscription" },
+    { done: !!s.first_admin, label: "Confirm a school administrator account exists", goto: "admins" },
+    { done: !!(s.features && Object.keys(s.features).length), label: "Review feature modules for this plan", goto: "features" },
+    { done: !!(s.motto || schoolLocationLabel(s) || s.logo_url), label: "Fill in school profile (logo, motto, location)", goto: "format" },
+  ];
+  const remaining = items.filter(i => !i.done);
+  if (!remaining.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  el.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      ${items.map(i => `
+        <div class="row" style="justify-content:space-between;gap:8px;">
+          <span style="${i.done ? 'text-decoration:line-through;color:var(--ink-soft);' : ''}">${i.done ? '✓' : '○'} ${i.label}</span>
+          ${!i.done ? `<button class="btn btn-ghost btn-sm" data-onb-goto="${i.goto}">Go</button>` : ""}
+        </div>`).join("")}
+    </div>
+    <div class="tiny-note" style="margin-top:8px;">${remaining.length} of ${items.length} left. This card disappears once everything's checked off.</div>`;
+  el.querySelectorAll("[data-onb-goto]").forEach(btn => {
+    btn.onclick = () => { schoolSubTab = btn.dataset.onbGoto; render(); };
+  });
 }
 
 function renderSchoolSubscriptionTab(s) {
@@ -3217,7 +3364,7 @@ function renderSchoolSubscriptionTab(s) {
     } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
   };
 
-  loadPaymentHistory(s.id);
+  loadPaymentHistory(s.id, s.name);
 }
 
 function renderSchoolFeaturesTab(s) {
@@ -3617,20 +3764,50 @@ function renderSchoolDangerTab(s) {
   };
 }
 
-async function loadPaymentHistory(schoolId) {
+async function loadPaymentHistory(schoolId, schoolName) {
   const el = document.getElementById("paymentHistory");
   try {
     const payments = await listPayments(schoolId);
     if (!payments.length) { el.innerHTML = `<div class="empty">No payments recorded yet.</div>`; return; }
-    el.innerHTML = `<table class="mini-table"><thead><tr><th>Date</th><th>Amount</th><th>Method</th><th>Note</th></tr></thead><tbody>
+    el.innerHTML = `<table class="mini-table"><thead><tr><th>Date</th><th>Amount</th><th>Method</th><th>Note</th><th></th></tr></thead><tbody>
       ${payments.map(p => `<tr>
         <td>${new Date(p.created_at).toLocaleString()}</td>
         <td>${p.amount}</td>
         <td>${(p.method||'—').replace('_',' ')}</td>
         <td>${p.note||'—'}</td>
+        <td><button class="btn btn-ghost btn-sm" data-receipt="${p.id}">Receipt</button></td>
       </tr>`).join("")}
     </tbody></table>`;
+    el.querySelectorAll("[data-receipt]").forEach(btn => {
+      btn.onclick = () => {
+        const p = payments.find(x => String(x.id) === btn.dataset.receipt);
+        if (p) downloadPaymentReceipt(schoolName, p);
+      };
+    });
   } catch(e) { el.innerHTML = `<div class="err">${e.message}</div>`; }
+}
+// Simple plain-text receipt generated entirely client-side from the payment
+// row already on screen — no invoice numbering/PDF layout, just something
+// concrete you can hand a school as proof of payment right after recording it.
+function downloadPaymentReceipt(schoolName, p) {
+  const lines = [
+    "TransApple Technologies — Payment Receipt",
+    "".padEnd(42, "-"),
+    `School: ${schoolName}`,
+    `Date: ${new Date(p.created_at).toLocaleString()}`,
+    `Amount received: ${p.amount}`,
+    `Method: ${(p.method||'—').replace('_',' ')}`,
+    p.note ? `Note: ${p.note}` : null,
+    `Receipt ref: ${p.id}`,
+    "".padEnd(42, "-"),
+    "This receipt was generated from the TransApple mother admin app.",
+  ].filter(Boolean).join("\n");
+  const blob = new Blob([lines], { type: "text/plain;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `receipt-${schoolName.replace(/[^a-z0-9]+/gi,'-')}-${p.id}.txt`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function loadAdmins(schoolId) {
@@ -4018,8 +4195,15 @@ async function renderComms() {
         <div id="announceList" class="tiny-note">Loading…</div>
       </div>
       <div class="card">
-        <div class="section-title">Support requests</div>
-        <div id="supportList" class="tiny-note">Loading…</div>
+        <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div class="section-title" style="margin:0;">Support requests</div>
+          <select id="supportStatusFilter" style="max-width:160px;">
+            <option value="open" ${supportStatusFilter==='open'?'selected':''}>Open (oldest first)</option>
+            <option value="resolved" ${supportStatusFilter==='resolved'?'selected':''}>Resolved</option>
+            <option value="all" ${supportStatusFilter==='all'?'selected':''}>All</option>
+          </select>
+        </div>
+        <div id="supportList" class="tiny-note" style="margin-top:8px;">Loading…</div>
       </div>
     </div>`;
   wireTopBar();
@@ -4060,6 +4244,8 @@ async function renderComms() {
   };
   loadAnnouncements();
   loadSupportRequests();
+  const supportFilterSelect = document.getElementById("supportStatusFilter");
+  if (supportFilterSelect) supportFilterSelect.onchange = () => { supportStatusFilter = supportFilterSelect.value; loadSupportRequests(); };
 }
 async function loadAnnouncements() {
   const el = document.getElementById("announceList");
@@ -4083,13 +4269,20 @@ async function loadAnnouncements() {
 async function loadSupportRequests() {
   const elc = document.getElementById("supportList");
   try {
-    const items = await listSupportRequests();
-    if (!items.length) { elc.innerHTML = `<div class="empty">No support requests yet.</div>`; return; }
-    elc.innerHTML = items.map(r => `
+    let items = await listSupportRequests(supportStatusFilter === "all" ? undefined : supportStatusFilter);
+    // Oldest-open-first, same "surface what's been waiting longest" pattern
+    // as the Risk tab's per-school engagement table. Resolved/All stay
+    // newest-first (the order the API already returns them in).
+    if (supportStatusFilter === "open") items = items.slice().sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
+    if (!items.length) { elc.innerHTML = `<div class="empty">No ${supportStatusFilter === "all" ? "" : supportStatusFilter + " "}support requests${supportStatusFilter === "all" ? " yet" : ""}.</div>`; return; }
+    elc.innerHTML = items.map(r => {
+      const ageDays = daysSince(r.created_at);
+      const ageBadge = r.status === "open" && ageDays !== null ? `<span class="badge ${ageDays >= 3 ? 'badge-suspended' : 'badge-deactivated'}">${ageDays === 0 ? 'today' : ageDays + 'd open'}</span>` : "";
+      return `
       <div class="admin-row" style="flex-direction:column;align-items:stretch;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;cursor:pointer;" data-toggle="${r.id}">
           <div>
-            <div style="font-weight:700;">${r.subject} <span class="badge ${r.status==='open'?'badge-warn':'badge-active'}">${r.status}</span></div>
+            <div style="font-weight:700;">${r.subject} <span class="badge ${r.status==='open'?'badge-warn':'badge-active'}">${r.status}</span> ${ageBadge}</div>
             <div class="tiny-note">${r.schools?.name || 'Unknown school'} · ${new Date(r.updated_at || r.created_at).toLocaleString()}</div>
             <div class="tiny-note">${r.message}</div>
           </div>
@@ -4105,7 +4298,8 @@ async function loadSupportRequests() {
             <button class="btn btn-primary btn-sm" data-reply="${r.id}">Send</button>
           </div>
         </div>
-      </div>`).join("");
+      </div>`;
+    }).join("");
     elc.querySelectorAll("[data-resolve]").forEach(btn => {
       btn.onclick = async (e) => { e.stopPropagation(); await resolveSupportRequest(btn.dataset.resolve); loadSupportRequests(); };
     });
@@ -4263,6 +4457,7 @@ function roleBadge(role) {
 async function renderSecurity() {
   loginActivityShowAll = false;
   auditLogShowAll = false;
+  auditLogActorFilter = "";
   app().innerHTML = `
     <div class="wrap">
       ${topBarHtml()}
@@ -4281,8 +4476,11 @@ async function renderSecurity() {
         <div id="loginActivityList" class="tiny-note">Loading…</div>
       </div>
       <div class="card">
-        <div class="section-title">Audit log</div>
-        <div class="tiny-note" style="margin-bottom:8px;">Every write made from this app, most recent first.</div>
+        <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div class="section-title" style="margin:0;">Audit log</div>
+          <select id="auditActorFilter" style="max-width:200px;"><option value="">All admins</option></select>
+        </div>
+        <div class="tiny-note" style="margin:8px 0;">Every write made from this app, most recent first.</div>
         <div id="auditLogList" class="tiny-note">Loading…</div>
       </div>
       <div class="card">
@@ -4392,13 +4590,21 @@ async function loadAuditLogList() {
   const el = document.getElementById("auditLogList");
   try {
     auditLogItems = await listAuditLog(500);
+    const filterSelect = document.getElementById("auditActorFilter");
+    if (filterSelect) {
+      const actors = Array.from(new Set(auditLogItems.map(r => r.actor_username).filter(Boolean))).sort();
+      filterSelect.innerHTML = `<option value="">All admins</option>` + actors.map(a => `<option value="${a}" ${a===auditLogActorFilter?'selected':''}>${a}</option>`).join("");
+      filterSelect.value = auditLogActorFilter;
+      filterSelect.onchange = () => { auditLogActorFilter = filterSelect.value; auditLogShowAll = false; renderAuditLogList(); };
+    }
     renderAuditLogList();
   } catch(e) { el.innerHTML = `<div class="err">${e.message}</div>`; }
 }
 function renderAuditLogList() {
   const el = document.getElementById("auditLogList");
-  if (!auditLogItems.length) { el.innerHTML = `<div class="empty">No audit entries yet.</div>`; return; }
-  const shown = auditLogShowAll ? auditLogItems : auditLogItems.slice(0, LOG_PAGE_SIZE);
+  const items = auditLogActorFilter ? auditLogItems.filter(r => r.actor_username === auditLogActorFilter) : auditLogItems;
+  if (!items.length) { el.innerHTML = `<div class="empty">${auditLogActorFilter ? `No audit entries for @${auditLogActorFilter}.` : "No audit entries yet."}</div>`; return; }
+  const shown = auditLogShowAll ? items : items.slice(0, LOG_PAGE_SIZE);
   el.innerHTML = `
     <div class="table-scroll"><table class="mini-table"><thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Details</th></tr></thead><tbody>
       ${shown.map(r => `<tr>
@@ -4409,7 +4615,7 @@ function renderAuditLogList() {
       </tr>`).join("")}
     </tbody></table></div>
     <div class="table-foot">
-      <span>${auditLogItems.length > LOG_PAGE_SIZE ? `<span class="link-btn" id="auditLogToggle">${auditLogShowAll ? "Show latest 10" : `Show all (${auditLogItems.length})`}</span>` : ""}</span>
+      <span>${items.length > LOG_PAGE_SIZE ? `<span class="link-btn" id="auditLogToggle">${auditLogShowAll ? "Show latest 10" : `Show all (${items.length})`}</span>` : ""}</span>
       ${isFullAccess() ? `<button class="btn btn-danger btn-sm" id="clearAuditLogBtn">Clear audit log</button>` : ""}
     </div>
     <div id="auditLogMsg"></div>`;
@@ -4441,11 +4647,13 @@ function dbUpdateCardHtml(u) {
   const created = new Date(u.created_at).toLocaleString();
   const appliedLine = u.status === "applied" && u.applied_at ? `<div class="tiny-note">Applied ${new Date(u.applied_at).toLocaleString()}</div>` : "";
   const errorLine = u.status === "failed" && u.error_message ? `<div class="err" style="margin-top:6px;">${u.error_message}</div>` : "";
+  const retryBtn = u.status === "failed" ? `<button class="btn btn-sm" data-dbu-retry="${u.id}">Retry (reset to pending)</button>` : "";
   const actions = u.status === "applied"
     ? `<button class="btn btn-sm" data-dbu-delete="${u.id}">Remove from history</button>`
     : `<button class="btn btn-primary btn-sm" data-dbu-run="${u.id}">Run now</button>
        <button class="btn btn-sm" data-dbu-applied="${u.id}">Mark Applied</button>
-       <button class="btn btn-sm" data-dbu-failed="${u.id}">Mark Failed</button>`;
+       <button class="btn btn-sm" data-dbu-failed="${u.id}">Mark Failed</button>
+       ${retryBtn}`;
   return `<div class="card" style="margin-bottom:10px;">
     <div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
       <div>
@@ -4539,6 +4747,12 @@ function wireDatabaseUpdateActions() {
     btn.onclick = async () => {
       if (!confirm("Remove this applied update from history? This can't be undone.")) return;
       try { await deleteDatabaseUpdate(btn.dataset.dbuDelete); loadDatabaseUpdates(); }
+      catch (e) { alert(e.message); }
+    };
+  });
+  document.querySelectorAll("[data-dbu-retry]").forEach(btn => {
+    btn.onclick = async () => {
+      try { await resetDatabaseUpdateToPending(btn.dataset.dbuRetry); loadDatabaseUpdates(); }
       catch (e) { alert(e.message); }
     };
   });
