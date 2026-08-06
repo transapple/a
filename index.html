@@ -2386,6 +2386,7 @@ const ICONS = {
   account:      `<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>`,
   database:     `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>`,
   risk:         `<svg viewBox="0 0 24 24"><path d="M12 2 2 21h20L12 2z"/><path d="M12 9v6M12 18h.01"/></svg>`,
+  trash:        `<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg>`,
 };
 
 /* ---------------- SHARED CHROME ----------------
@@ -2420,6 +2421,7 @@ function navTabs(active) {
     ["monitoring","Monitoring","monitoring"],["comms","Comms","comms"],
     ["updates","Updates","updates"],["security","Security","security"],
     ["dbupdates","DB Updates","database"],
+    ["trash","Trash","trash"],
     ["settings","Settings","settings"],
   ];
   return `<div class="tabrail">
@@ -2570,11 +2572,6 @@ async function renderDashboard() {
         <div class="tiny-note" style="margin-bottom:8px;">Rejected schools stay here — restore one back to Pending, or delete it completely.</div>
         <div id="rejectedList"></div>
       </div>
-      <div class="card" id="trashCard" style="display:none;">
-        <div class="section-title" style="color:var(--red-dark);">Trash</div>
-        <div class="tiny-note" style="margin-bottom:8px;">Deleted schools sit here for 30 days — login is already blocked for them — then they're permanently purged automatically, data and all. There is no restore.</div>
-        <div id="trashList"></div>
-      </div>
       <div class="card">
         <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
           <div class="section-title" style="margin:0;">Schools</div>
@@ -2624,33 +2621,11 @@ async function loadSchools() {
   try {
     const allSchools = await listSchools();
     if (exportBtn) exportBtn.onclick = () => exportSchoolsCSV(allSchools.filter(s => !s.deleted_at));
-    if (!allSchools.length) { listEl.innerHTML = `<div class="tiny-note">No schools registered yet.</div>`; if (pendingCard) pendingCard.style.display = "none"; if (document.getElementById("rejectedCard")) document.getElementById("rejectedCard").style.display = "none"; if (document.getElementById("trashCard")) document.getElementById("trashCard").style.display = "none"; return; }
+    if (!allSchools.length) { listEl.innerHTML = `<div class="tiny-note">No schools registered yet.</div>`; if (pendingCard) pendingCard.style.display = "none"; if (document.getElementById("rejectedCard")) document.getElementById("rejectedCard").style.display = "none"; return; }
 
-    // Trashed schools never appear in Pending/Rejected/Schools below — they
-    // get their own Trash card, with no restore option (see SCHOOL_TRASH_SQL).
-    const trashCard = document.getElementById("trashCard");
-    const trashList = document.getElementById("trashList");
-    const trashed = allSchools.filter(s => s.deleted_at);
-    if (trashCard && trashList) {
-      if (trashed.length) {
-        trashCard.style.display = "";
-        trashList.innerHTML = trashed.map(s => {
-          const daysLeft = Math.max(0, 30 - Math.floor((Date.now() - new Date(s.deleted_at).getTime()) / 86400000));
-          return `
-          <div class="school-row">
-            <div class="row" style="gap:10px;">
-              ${schoolLogoHtml(s)}
-              <div>
-                <div class="school-name">${s.name}</div>
-                <div class="tiny-note">Deleted ${new Date(s.deleted_at).toLocaleDateString()}${s.deleted_by ? ` by ${s.deleted_by}` : ""}</div>
-                <div class="tiny-note" style="color:var(--red-dark);font-weight:700;">${daysLeft > 0 ? `Permanently deleted in ${daysLeft} day${daysLeft===1?"":"s"} — no restore` : "Being permanently deleted — no restore"}</div>
-              </div>
-            </div>
-          </div>`;
-        }).join("");
-      } else { trashCard.style.display = "none"; }
-    }
-
+    // Trashed schools never appear on Home (Pending/Rejected/Schools) — they
+    // live on their own dedicated Trash page instead, with no restore
+    // option (see SCHOOL_TRASH_SQL and renderTrash()).
     const schools = allSchools.filter(s => !s.deleted_at);
     if (!schools.length) { listEl.innerHTML = `<div class="tiny-note">No schools registered yet.</div>`; if (pendingCard) pendingCard.style.display = "none"; if (document.getElementById("rejectedCard")) document.getElementById("rejectedCard").style.display = "none"; return; }
 
@@ -2798,6 +2773,54 @@ async function loadSchools() {
     };
   } catch(e) {
     listEl.innerHTML = `<div class="err">${e.message}</div>`;
+  }
+}
+
+/* ---------------- TRASH (its own page, off Home) ----------------
+   Deleted schools used to sit in a card right on the Home/Schools screen;
+   they now live here instead, one tap away via the "Trash" nav pill —
+   Home only ever shows schools someone can still act on. Login is already
+   blocked for everything in here the moment it's deleted; after 30 days
+   purge_expired_trashed_schools() removes it (and all its data) for good,
+   with no restore, same as before. */
+async function renderTrash() {
+  app().innerHTML = `
+    <div class="wrap">
+      ${topBarHtml()}
+      ${navTabs("trash")}
+      <div class="card">
+        <div class="section-title" style="color:var(--red-dark);">Trash</div>
+        <div class="tiny-note" style="margin-bottom:8px;">Deleted schools sit here for 30 days — login is already blocked for them — then they're permanently purged automatically, data and all. There is no restore.</div>
+        <div id="trashList">Loading…</div>
+      </div>
+    </div>`;
+  wireTopBar();
+  wireNavTabs();
+  loadTrash();
+}
+async function loadTrash() {
+  const trashList = document.getElementById("trashList");
+  purgeExpiredTrashedSchools(); // fire-and-forget: finalizes any school whose 30-day Trash window already passed
+  try {
+    const allSchools = await listSchools();
+    const trashed = allSchools.filter(s => s.deleted_at);
+    if (!trashed.length) { trashList.innerHTML = `<div class="tiny-note">Trash is empty.</div>`; return; }
+    trashList.innerHTML = trashed.map(s => {
+      const daysLeft = Math.max(0, 30 - Math.floor((Date.now() - new Date(s.deleted_at).getTime()) / 86400000));
+      return `
+      <div class="school-row">
+        <div class="row" style="gap:10px;">
+          ${schoolLogoHtml(s)}
+          <div>
+            <div class="school-name">${s.name}</div>
+            <div class="tiny-note">Deleted ${new Date(s.deleted_at).toLocaleDateString()}${s.deleted_by ? ` by ${s.deleted_by}` : ""}</div>
+            <div class="tiny-note" style="color:var(--red-dark);font-weight:700;">${daysLeft > 0 ? `Permanently deleted in ${daysLeft} day${daysLeft===1?"":"s"} — no restore` : "Being permanently deleted — no restore"}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join("");
+  } catch(e) {
+    trashList.innerHTML = `<div class="err">${e.message}</div>`;
   }
 }
 
@@ -4576,6 +4599,7 @@ function render() {
   else if (view === "updates") renderUpdates();
   else if (view === "security") renderSecurity();
   else if (view === "dbupdates") renderDatabaseUpdates();
+  else if (view === "trash") renderTrash();
   else renderDashboard();
 }
 /* ---------------- Keyboard-aware form scrolling ----------------
