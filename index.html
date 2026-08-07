@@ -3126,6 +3126,8 @@ const FEATURE_MODULES = [
   { id: "exams",          label: "Exams" },
   { id: "academic",       label: "Setup (terms/classes/subjects)" },
   { id: "comms",          label: "Comms (announcements/meetings)" },
+  { id: "inventory",      label: "Inventory & Assets" },
+  { id: "library",        label: "Library" },
   { id: "parent_portal",  label: "Parent Portal" },
 ];
 // What a fresh plan turns on by default. Each tier is a strict superset of
@@ -3138,15 +3140,15 @@ const FEATURE_MODULES = [
 const PLAN_FEATURE_DEFAULTS = {
   // Trial (Free): just enough to evaluate the core workflow — enrollment,
   // staff records, attendance. No Parent Portal on a free trial.
-  Trial:    { students:true, teachers:true, attendance:true, health:false, fees:false, exams:false, academic:false, comms:false, parent_portal:false },
+  Trial:    { students:true, teachers:true, attendance:true, health:false, fees:false, exams:false, academic:false, comms:false, inventory:false, library:false, parent_portal:false },
   // Basic (Paid): adds the day-to-day essentials — fees, term/class setup,
   // parent comms. Parent Portal is held back for Standard+ (it's the module
   // most likely to drive an upgrade once a school sees it in the demo).
-  Basic:    { students:true, teachers:true, attendance:true, health:false, fees:true,  exams:false, academic:true,  comms:true,  parent_portal:false },
+  Basic:    { students:true, teachers:true, attendance:true, health:false, fees:true,  exams:false, academic:true,  comms:true,  inventory:false, library:false, parent_portal:false },
   // Standard (Paid): adds exams/report cards on top of Basic, plus Parent Portal.
-  Standard: { students:true, teachers:true, attendance:true, health:false, fees:true,  exams:true,  academic:true,  comms:true,  parent_portal:true  },
+  Standard: { students:true, teachers:true, attendance:true, health:false, fees:true,  exams:true,  academic:true,  comms:true,  inventory:true,  library:true,  parent_portal:true  },
   // Premium (Paid): full access to every module, including School Health and Parent Portal.
-  Premium:  { students:true, teachers:true, attendance:true, health:true,  fees:true,  exams:true,  academic:true,  comms:true,  parent_portal:true  },
+  Premium:  { students:true, teachers:true, attendance:true, health:true,  fees:true,  exams:true,  academic:true,  comms:true,  inventory:true,  library:true,  parent_portal:true  },
 };
 function planDefaultFeatures(plan) {
   return PLAN_FEATURE_DEFAULTS[plan] || null; // null for an unrecognized/no plan — caller decides fallback
