@@ -22,8 +22,10 @@
     --shadow-lg:0 20px 45px -18px rgba(20,23,35,.30);
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{overflow-x:hidden;width:100%;max-width:100%;}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;}
-  .wrap{max-width:720px;margin:0 auto;padding:16px 14px calc(96px + env(safe-area-inset-bottom,0px));}
+  .wrap{max-width:720px;margin:0 auto;padding:16px 14px calc(78px + env(safe-area-inset-bottom,0px));overflow-x:hidden;}
+  img{max-width:100%;}
 
   /* ---- Top bar / brand / account chip ---- */
   .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px;padding:2px 2px 0;}
@@ -41,8 +43,8 @@
      the "More" slot as a slide-up sheet, the same pattern real
      native apps use once they have more than ~5 destinations.
      ========================================================= */
-  .tabrail{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:space-between;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));margin:0;background:rgba(255,255,255,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top:1px solid var(--line);box-shadow:0 -8px 24px -14px rgba(20,23,35,.20);z-index:100;}
-  .tab-pill{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:none;background:transparent;color:var(--slate);font-size:10.5px;font-weight:700;padding:7px 2px 6px;border-radius:14px;cursor:pointer;transition:color .15s ease,transform .1s ease;position:relative;}
+  .tabrail{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:space-between;padding:4px 4px calc(4px + env(safe-area-inset-bottom,0px));margin:0;background:rgba(255,255,255,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top:1px solid var(--line);box-shadow:0 -8px 24px -14px rgba(20,23,35,.20);z-index:100;max-width:100%;overflow:hidden;}
+  .tab-pill{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:none;background:transparent;color:var(--slate);font-size:10.5px;font-weight:700;padding:5px 1px 4px;border-radius:14px;cursor:pointer;transition:color .15s ease,transform .1s ease;position:relative;}
   .tab-pill:active{transform:scale(.94);}
   .tab-pill .icon{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:10px;transition:background .15s ease;margin-bottom:1px;}
   .tab-pill .icon svg{width:21px;height:21px;}
@@ -258,6 +260,42 @@ let currentSchoolId = null;
 let schoolSubTab = null; // null = show this school's menu; else "oversight", "subscription", "features", "admins", "danger"
 let schoolDangerNotice = null; // one-shot message shown when redirected into the Danger Zone tab
 let settingsSubTab = null; // null = show the Settings menu; else "account", "admins", "plans"
+
+// ---------------- History-based navigation ----------------
+// Every screen change below goes through goTo() instead of assigning
+// view/currentSchoolId/schoolSubTab/settingsSubTab directly, so each one
+// also pushes a browser history entry. That means the device's hardware
+// back button (Android back key/gesture, or a browser's own back button)
+// steps back through the app exactly the way the on-screen "‹ Back" links
+// do — in fact those links now just call history.back() themselves, so
+// there's a single source of truth for "back" instead of two.
+function navState() {
+  return { view, currentSchoolId, schoolSubTab, settingsSubTab };
+}
+function applyNavState(state) {
+  const s = state || {};
+  view = s.view || "dashboard";
+  currentSchoolId = s.currentSchoolId != null ? s.currentSchoolId : null;
+  schoolSubTab = s.schoolSubTab != null ? s.schoolSubTab : null;
+  settingsSubTab = s.settingsSubTab != null ? s.settingsSubTab : null;
+}
+// patch: any subset of {view, currentSchoolId, schoolSubTab, settingsSubTab}.
+// { replace:true } swaps the current history entry instead of adding a new
+// one — used after a destructive action (e.g. deleting the school you were
+// viewing) where going "back" to the old screen wouldn't make sense.
+function goTo(patch, { replace = false } = {}) {
+  if (Object.prototype.hasOwnProperty.call(patch, "view")) view = patch.view;
+  if (Object.prototype.hasOwnProperty.call(patch, "currentSchoolId")) currentSchoolId = patch.currentSchoolId;
+  if (Object.prototype.hasOwnProperty.call(patch, "schoolSubTab")) schoolSubTab = patch.schoolSubTab;
+  if (Object.prototype.hasOwnProperty.call(patch, "settingsSubTab")) settingsSubTab = patch.settingsSubTab;
+  if (replace) history.replaceState(navState(), "");
+  else history.pushState(navState(), "");
+  render();
+}
+window.addEventListener("popstate", (e) => {
+  applyNavState(e.state);
+  render();
+});
 const LOG_PAGE_SIZE = 10; // default number of rows shown before "Show all"
 let auditLogItems = [];
 let auditLogShowAll = false;
@@ -327,12 +365,15 @@ function motherLogout() {
     // Best-effort — invalidate the token server-side so it can't be replayed.
     sb(`/rest/v1/rpc/logout_mother_session`, { method:"POST", body: JSON.stringify({ p_username: motherAdmin.username, p_token: motherAdmin.session_token }) }).catch(()=>{});
   }
-  motherAdmin = null; view = "dashboard"; forgetMother(); forgetToken();
-  render();
+  motherAdmin = null; forgetMother(); forgetToken();
+  goTo({ view: "dashboard", currentSchoolId: null, schoolSubTab: null, settingsSubTab: null }, { replace: true });
 }
 async function boot() {
   const restored = await tryRestoreMotherSession();
   if (!restored) motherAdmin = null;
+  // Seed the first history entry so the very first back-button press has
+  // somewhere sane to land instead of an empty/undefined state.
+  history.replaceState(navState(), "");
   render();
 }
 async function addMotherAdmin({ creatorPassword, newUsername, newPassword, newFullName, newRole }) {
@@ -736,7 +777,7 @@ function topBarHtml() {
 }
 function wireTopBar() {
   const chip = document.getElementById("acctChip");
-  if (chip) chip.onclick = () => { view = "settings"; render(); };
+  if (chip) chip.onclick = () => { goTo({ view: "settings" }); };
 }
 // Primary bottom rail stays at 5 slots — matching the real-app convention of
 // never scrolling the main tab bar. Everything past that (Suspended, Trash,
@@ -777,7 +818,7 @@ function navTabs(active) {
 }
 function wireNavTabs() {
   document.querySelectorAll("[data-tab]").forEach(btn => {
-    btn.onclick = () => { view = btn.dataset.tab; render(); };
+    btn.onclick = () => { goTo({ view: btn.dataset.tab }); };
   });
   const moreBtn = document.getElementById("moreTabBtn");
   const sheet = document.getElementById("moreSheet");
@@ -787,7 +828,7 @@ function wireNavTabs() {
   if (moreBtn) moreBtn.onclick = openSheet;
   if (backdrop) backdrop.onclick = closeSheet;
   document.querySelectorAll("[data-more]").forEach(item => {
-    item.onclick = () => { view = item.dataset.more; render(); };
+    item.onclick = () => { goTo({ view: item.dataset.more }); };
   });
 }
 // Generic sub-tab rail: tabs = [[id,label,iconKey,danger?], ...]
@@ -936,7 +977,7 @@ async function renderDashboard() {
   wireTopBar();
   wireNavTabs();
   document.querySelectorAll("[data-go]").forEach(row => {
-    row.onclick = () => { view = row.dataset.go; render(); };
+    row.onclick = () => { goTo({ view: row.dataset.go }); };
   });
   loadSchools();
 }
@@ -1131,7 +1172,7 @@ async function loadSchools() {
       </div>`;
     }).join("");
     listEl.querySelectorAll("[data-open]").forEach(row => {
-      row.onclick = () => { currentSchoolId = row.dataset.open; schoolSubTab = null; view = "schoolDetail"; render(); };
+      row.onclick = () => { goTo({ currentSchoolId: row.dataset.open, schoolSubTab: null, view: "schoolDetail" }); };
     });
   } catch(e) {
     listEl.innerHTML = `<div class="err">${e.message}</div>`;
@@ -1199,7 +1240,7 @@ async function loadSuspendedList() {
     suspendedList.querySelectorAll("[data-open-suspended]").forEach(btn => {
       btn.onclick = (e) => {
         e.stopPropagation();
-        currentSchoolId = btn.dataset.openSuspended; schoolSubTab = null; view = "schoolDetail"; render();
+        goTo({ currentSchoolId: btn.dataset.openSuspended, schoolSubTab: null, view: "schoolDetail" });
       };
     });
   } catch(e) {
@@ -1259,13 +1300,13 @@ async function loadTrashList() {
       btn.onclick = (e) => {
         e.stopPropagation();
         schoolDangerNotice = `Type "${btn.dataset.deleteTrashedName}" and your password below to permanently delete it.`;
-        currentSchoolId = btn.dataset.deleteTrashed; schoolSubTab = "danger"; view = "schoolDetail"; render();
+        goTo({ currentSchoolId: btn.dataset.deleteTrashed, schoolSubTab: "danger", view: "schoolDetail" });
       };
     });
     trashList.querySelectorAll("[data-open-trashed]").forEach(btn => {
       btn.onclick = (e) => {
         e.stopPropagation();
-        currentSchoolId = btn.dataset.openTrashed; schoolSubTab = "danger"; view = "schoolDetail"; render();
+        goTo({ currentSchoolId: btn.dataset.openTrashed, schoolSubTab: "danger", view: "schoolDetail" });
       };
     });
   } catch(e) {
@@ -1281,10 +1322,10 @@ function renderSettings() {
       ${settingsSubTab ? `<div class="back-link" id="settingsMenuBackBtn">‹ Back to Settings</div>` : ""}
       <div id="settingsTabContent"></div>
     </div>`;
-  document.getElementById("backBtn").onclick = () => { view = "dashboard"; render(); };
+  document.getElementById("backBtn").onclick = () => { history.back(); };
   wireTopBar();
   const menuBackBtn = document.getElementById("settingsMenuBackBtn");
-  if (menuBackBtn) menuBackBtn.onclick = () => { settingsSubTab = null; renderSettings(); };
+  if (menuBackBtn) menuBackBtn.onclick = () => { history.back(); };
 
   if (!settingsSubTab) { renderSettingsMenu(); return; }
   if (settingsSubTab === "admins") renderSettingsAdminsTab();
@@ -1298,7 +1339,7 @@ function renderSettingsMenu() {
       <div class="section-title">Settings</div>
       <div class="menu-list-card">${menuListHtml(SETTINGS_TABS, "settingstab")}</div>
     </div>`;
-  wireMenuList("settingstab", (id) => { settingsSubTab = id; renderSettings(); });
+  wireMenuList("settingstab", (id) => { goTo({ settingsSubTab: id }); });
 }
 
 function renderSettingsAccountTab() {
@@ -1503,10 +1544,10 @@ async function renderSchoolDetail() {
       <div id="schoolTabContent"></div>
     </div>`;
 
-  document.getElementById("backBtn").onclick = () => { view = "dashboard"; render(); };
+  document.getElementById("backBtn").onclick = () => { history.back(); };
   wireTopBar();
   const menuBackBtn = document.getElementById("schoolMenuBackBtn");
-  if (menuBackBtn) menuBackBtn.onclick = () => { schoolSubTab = null; render(); };
+  if (menuBackBtn) menuBackBtn.onclick = () => { history.back(); };
 
   // Status actions (approve / reject / suspend-toggle / deactivate-toggle / delete) —
   // always visible above the tabs since they apply to the whole school record.
@@ -1523,8 +1564,7 @@ async function renderSchoolDetail() {
           // the Danger Zone's "Delete school completely" does properly,
           // wiping the data first. Send them there instead of failing here.
           schoolDangerNotice = `To delete "${s.name}", use "Delete school completely" below — it safely clears the school's data first.`;
-          schoolSubTab = "danger";
-          render();
+          goTo({ schoolSubTab: "danger" });
           return;
         } else if (action === "toggle-suspend") {
           await setSchoolStatus(s.id, s.status === "suspended" ? "active" : "suspended");
@@ -1554,7 +1594,7 @@ function renderSchoolMenu(s) {
       <div class="section-title">Manage this school</div>
       <div class="menu-list-card">${menuListHtml(SCHOOL_TABS, "schooltab")}</div>
     </div>`;
-  wireMenuList("schooltab", (id) => { schoolSubTab = id; render(); });
+  wireMenuList("schooltab", (id) => { goTo({ schoolSubTab: id }); });
 }
 
 const OVERSIGHT_SEVERITY_BADGE = { high:"badge-suspended", medium:"badge-warn", low:"badge-pending" };
@@ -1851,7 +1891,11 @@ function renderSchoolDangerTab(s) {
     if (!confirm(`Permanently delete "${s.name}" AND every data row belonging to it? The school will disappear from this app completely. This cannot be undone.`)) return;
     try {
       await deleteSchoolCompletely(s.id, dzPw.value);
-      view = "dashboard"; render(); return;
+      // Replace, not push — the school we were viewing no longer exists,
+      // so a "back" press from here should skip past its now-dead detail
+      // screen instead of returning to it.
+      goTo({ view: "dashboard", currentSchoolId: null, schoolSubTab: null }, { replace: true });
+      return;
     } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
   };
 }
