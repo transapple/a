@@ -1043,7 +1043,9 @@ function wireRegisterSchoolFab() {
   if (overlay) overlay.addEventListener("click", (e) => { if (e.target === overlay) closeRegisterSchoolModal(); });
   const closeBtn = document.getElementById("registerSchoolCloseBtn");
   if (closeBtn) closeBtn.onclick = closeRegisterSchoolModal;
-  document.getElementById("createSchoolBtn").onclick = async () => {
+  const createBtn = document.getElementById("createSchoolBtn");
+  createBtn.onclick = async () => {
+    if (createBtn.disabled) return;
     const name = document.getElementById("newSchoolName").value.trim();
     const motto = document.getElementById("newSchoolMotto").value.trim();
     const village = document.getElementById("newSchoolVillage").value.trim();
@@ -1052,12 +1054,16 @@ function wireRegisterSchoolFab() {
     const size = document.getElementById("newSchoolSize").value.trim();
     const msg = document.getElementById("createMsg"); msg.innerHTML = "";
     if (!name) { msg.innerHTML = `<div class="err">Enter a school name.</div>`; return; }
+    createBtn.disabled = true;
+    const originalLabel = createBtn.textContent;
+    createBtn.textContent = "Registering…";
     try {
       const school = await createSchool({ name, motto, village, subCounty, district, size: size ? Number(size) : null });
       ["newSchoolName","newSchoolMotto","newSchoolVillage","newSchoolSubcounty","newSchoolDistrict","newSchoolSize"].forEach(id => { document.getElementById(id).value = ""; });
       msg.innerHTML = `<div class="msg-ok">School registered and active. Give them this School ID so their first staff member can create the admin account: <strong class="mono">${school.school_code}</strong></div>`;
       if (view === "dashboard") loadSchools();
     } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
+    finally { createBtn.disabled = false; createBtn.textContent = originalLabel; }
   };
 }
 
@@ -1557,13 +1563,20 @@ async function renderSchoolDetail() {
       const msg = document.getElementById("statusMsg"); msg.innerHTML = "";
       try {
         if (action === "approve") { await approveSchool(s.id); }
-        else if (action === "reject" || action === "delete") {
-          // Deleting a school that has ANY data (even a self-registered
-          // school's first admin account) fails as a plain row delete, since
-          // every school-scoped table references schools(id) — that's what
-          // the Danger Zone's "Delete school completely" does properly,
-          // wiping the data first. Send them there instead of failing here.
-          schoolDangerNotice = `To delete "${s.name}", use "Delete school completely" below — it safely clears the school's data first.`;
+        else if (action === "reject") {
+          // A pending school was never approved, so it has no staff/data yet
+          // — a plain row delete is safe and immediate, same as the
+          // dashboard's own "Reject" button for pending schools.
+          if (!confirm(`Reject and delete "${s.name}"? It was never approved, so nothing else is deleted with it. This cannot be undone.`)) return;
+          await deleteSchool(s.id);
+          goTo({ view: "dashboard", currentSchoolId: null, schoolSubTab: null }, { replace: true });
+          return;
+        } else if (action === "delete") {
+          // "Delete" here means "I don't want this school active any more" —
+          // that's Trash: reversible for 3 months, nothing destroyed. Permanent,
+          // unrecoverable deletion is a separate, deliberate choice further
+          // down in the Danger Zone, not the default for a plain "Delete" click.
+          schoolDangerNotice = `To remove "${s.name}", use "Move to Trash" below — it's reversible for 3 months. Only use "Delete school completely" further down if you want to permanently destroy its data with no way back.`;
           goTo({ schoolSubTab: "danger" });
           return;
         } else if (action === "toggle-suspend") {
@@ -1828,13 +1841,14 @@ function renderSchoolDangerTab(s) {
     <div class="card">
       <div class="section-title">Trash</div>
       <div class="tiny-note" style="margin-bottom:10px;">Moves this school to Trash: it disappears from the school list and its staff are blocked from logging in, but nothing is deleted. Recoverable for 3 months.</div>
+      ${notice ? `<div class="msg-ok" style="margin-bottom:10px;">${notice}</div>` : ""}
       <div id="trashZoneMsg"></div>
-      <button class="btn btn-ghost btn-sm" id="moveToTrashBtn">Move to Trash</button>
+      <button class="btn btn-primary btn-sm" id="moveToTrashBtn">Move to Trash</button>
     </div>`}
     <div class="card card-danger" id="dangerZoneCard">
       <div class="section-title" style="color:var(--red-dark);">Danger zone</div>
       <div class="tiny-note" style="margin-bottom:10px;">These actions permanently delete data. There is no undo — unlike Trash above. Type the school's exact name below to unlock either button.</div>
-      <div id="dangerMsg">${notice ? `<div class="err">${notice}</div>` : ""}</div>
+      <div id="dangerMsg"></div>
       <div class="field"><label>Type "${s.name}" to confirm</label><input id="dangerConfirmName" placeholder="${s.name}" /></div>
       <div class="field"><label>Your password</label><input id="dangerConfirmPw" type="password" /></div>
       <div class="row" style="flex-wrap:wrap;gap:8px;">
@@ -1924,11 +1938,19 @@ async function loadAdmins(schoolId) {
     if (!admins.length) {
       listEl.innerHTML = `<div class="empty">No administrator accounts found for this school.</div>`;
     } else {
+      const adminAvatarHtml = (a) => {
+        if (a.photo_url) return `<img src="${a.photo_url}" alt="" style="width:36px;height:36px;border-radius:50%;object-fit:cover;flex-shrink:0;" />`;
+        const initials = (a.full_name || "?").trim().split(/\s+/).map(w => w[0]).slice(0,2).join("").toUpperCase();
+        return `<div style="width:36px;height:36px;border-radius:50%;background:var(--card-alt,#eee);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0;">${initials}</div>`;
+      };
       listEl.innerHTML = admins.map(a => `
         <div class="admin-row">
-          <div>
-            <div style="font-weight:700;">${a.full_name}</div>
-            <div class="tiny-note">@${a.username}${[a.phone,a.email,a.whatsapp].filter(Boolean).length ? " · " + [a.phone,a.email].filter(Boolean).join(" · ") : ""}</div>
+          <div class="row" style="gap:10px;align-items:center;">
+            ${adminAvatarHtml(a)}
+            <div>
+              <div style="font-weight:700;">${a.full_name}</div>
+              <div class="tiny-note">@${a.username}${[a.phone,a.email,a.whatsapp].filter(Boolean).length ? " · " + [a.phone,a.email].filter(Boolean).join(" · ") : ""}</div>
+            </div>
           </div>
           <div class="row" style="flex-wrap:wrap;justify-content:flex-end;">
             <button class="btn btn-ghost btn-sm" data-reset="${a.id}" data-email="${a.email||''}" ${a.email ? '' : 'disabled title="No email on file"'}>Send password reset email</button>
