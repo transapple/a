@@ -879,72 +879,32 @@ function escapeHtml(str) {
 function el(html){ const d=document.createElement("div"); d.innerHTML=html.trim(); return d.firstChild; }
 function app(){ return document.getElementById("app"); }
 
-let authMode = "login"; // "login" or "create" — which form renderLogin() shows
-let loginNotice = null; // one-shot success message shown on the login screen after account creation
 function renderLogin() {
-  const notice = loginNotice;
-  loginNotice = null;
   app().innerHTML = `
     <div class="login-wrap"><div class="login-card">
       <div style="display:flex;flex-direction:column;align-items:center;text-align:center;margin-bottom:20px;">
         <img src="${LOGO_URI}" alt="TransApple Technologies" style="width:104px;height:104px;border-radius:50%;object-fit:cover;margin-bottom:14px;box-shadow:var(--shadow-md);">
         <div class="brand" style="font-size:21px;">TransApple <span>Technologies</span></div>
       </div>
-      <div id="loginMsg">${notice ? `<div class="msg-ok">${notice}</div>` : ""}</div>
+      <div id="loginMsg"></div>
       <div id="loginForm"></div>
-      <div class="tiny-note" style="text-align:center;margin-top:12px;">${authMode==="login" ? `New admin? <span class="link-btn" id="toCreate">Create account</span>` : `Already an admin? <span class="link-btn" id="toLogin">Log in</span>`}</div>
     </div></div>`;
   const formDiv = document.getElementById("loginForm");
-  if (authMode === "login") {
-    formDiv.innerHTML = `
-      <div class="field"><label>Username</label><input id="username" autocapitalize="none" /></div>
-      <div class="field"><label>Password</label><input id="password" type="password" /></div>
-      <label class="row" style="gap:8px;align-items:center;font-size:13px;font-weight:600;color:var(--ink-soft);margin:0 0 12px;">
-        <input id="remember" type="checkbox" style="width:16px;height:16px;" /> Remember me on this device
-      </label>
-      <button class="btn btn-primary" id="loginBtn" style="width:100%;">Log in</button>
-    `;
-    document.getElementById("loginBtn").onclick = async () => {
-      const msg = document.getElementById("loginMsg"); msg.innerHTML = "";
-      try {
-        await motherLogin(document.getElementById("username").value.trim(), document.getElementById("password").value, document.getElementById("remember").checked);
-        render();
-      } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
-    };
-  } else {
-    formDiv.innerHTML = `
-      <div class="tiny-note" style="margin-bottom:10px;">A new admin gets full control over every school, so this still needs an existing admin's login as proof — enter theirs below to vouch for the new account.</div>
-      <div class="field"><label>New admin's username</label><input id="na_username" autocapitalize="none" /></div>
-      <div class="field"><label>New admin's full name</label><input id="na_fullname" /></div>
-      <div class="field"><label>New admin's password</label><input id="na_password" type="password" placeholder="At least 6 characters" /></div>
-      <div class="field" style="margin-top:10px;"><label>Existing admin's username (to vouch)</label><input id="na_creatorUsername" autocapitalize="none" /></div>
-      <div class="field"><label>Existing admin's password</label><input id="na_creatorPassword" type="password" /></div>
-      <button class="btn btn-primary" id="createBtn" style="width:100%;">Create account</button>
-    `;
-    document.getElementById("createBtn").onclick = async () => {
-      const msg = document.getElementById("loginMsg"); msg.innerHTML = "";
-      const newUsername = document.getElementById("na_username").value.trim();
-      const newFullName = document.getElementById("na_fullname").value.trim();
-      const newPassword = document.getElementById("na_password").value;
-      const creatorUsername = document.getElementById("na_creatorUsername").value.trim();
-      const creatorPassword = document.getElementById("na_creatorPassword").value;
-      try {
-        if (!newUsername || !newPassword) throw new Error("New admin's username and password are required.");
-        if (newPassword.length < 6) throw new Error("New password must be at least 6 characters.");
-        if (!creatorUsername || !creatorPassword) throw new Error("Enter an existing admin's username and password to vouch for this account.");
-        await sb(`/rest/v1/rpc/create_mother_admin`, { method:"POST", body: JSON.stringify({
-          p_creator_username: creatorUsername, p_creator_password: creatorPassword,
-          p_new_username: newUsername, p_new_password: newPassword, p_new_full_name: newFullName || null,
-        }) });
-        loginNotice = "Account created. You can log in now.";
-        authMode = "login"; render();
-      } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
-    };
-  }
-  const toCreate = document.getElementById("toCreate");
-  if (toCreate) toCreate.onclick = () => { authMode = "create"; render(); };
-  const toLogin = document.getElementById("toLogin");
-  if (toLogin) toLogin.onclick = () => { authMode = "login"; render(); };
+  formDiv.innerHTML = `
+    <div class="field"><label>Username</label><input id="username" autocapitalize="none" /></div>
+    <div class="field"><label>Password</label><input id="password" type="password" /></div>
+    <label class="row" style="gap:8px;align-items:center;font-size:13px;font-weight:600;color:var(--ink-soft);margin:0 0 12px;">
+      <input id="remember" type="checkbox" style="width:16px;height:16px;" /> Remember me on this device
+    </label>
+    <button class="btn btn-primary" id="loginBtn" style="width:100%;">Log in</button>
+  `;
+  document.getElementById("loginBtn").onclick = async () => {
+    const msg = document.getElementById("loginMsg"); msg.innerHTML = "";
+    try {
+      await motherLogin(document.getElementById("username").value.trim(), document.getElementById("password").value, document.getElementById("remember").checked);
+      render();
+    } catch(e) { msg.innerHTML = `<div class="err">${e.message}</div>`; }
+  };
 }
 
 async function renderDashboard() {
