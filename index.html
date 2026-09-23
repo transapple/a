@@ -214,13 +214,19 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
       </div>
 
       <div class="result" id="result">
-        <div class="detectedHeader"><span>✓</span><div><b>Content detected</b><small>Review before storing</small></div></div>
-        <div class="grid2">
+        <div class="detectedHeader"><span>✓</span><div><b>Content detected</b><small id="detHeaderSub">Review before storing</small></div></div>
+        <div class="grid3">
           <div class="field"><label>SUBJECT</label><select id="detSubject"></select></div>
+          <div class="field"><label>CLASS LEVEL (DETECTED)</label><select id="detClassLevel" disabled></select></div>
           <div class="field"><label id="detYearLabel">ACADEMIC YEAR</label><input id="detYear" placeholder="e.g. 2026"></div>
         </div>
         <div class="field full"><label>CONTENT</label><input id="detSummary"></div>
         <div id="duplicateMessage" class="duplicateMessage"></div>
+      </div>
+
+      <div class="result blocked" id="blockedResult">
+        <div class="detectedHeader"><span>✕</span><div><b>Not accepted</b><small>PrimaryVault is primary-level only</small></div></div>
+        <div class="blockedText" id="blockedText"></div>
       </div>
     </div>
 
@@ -242,7 +248,7 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
     <div class="modalBody">
       <div class="contactIntro">
         <div class="contactIcon">☏</div>
-        <div><b>WhatsApp Support</b><p>Fill in your name, school ID and message. Your message will be prepared in WhatsApp.</p></div>
+        <div><b>Message PrimaryVault Support</b><p>Fill in your name, school ID and message. It goes straight to the PrimaryVault team — no WhatsApp needed.</p></div>
       </div>
       <div class="contactFields">
         <div class="field full"><label>YOUR NAME *</label><input id="contactName" required placeholder="Enter your name"></div>
@@ -253,7 +259,7 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
     </div>
     <div class="modalFoot">
       <button class="btn" onclick="closeContact()">Cancel</button>
-      <button class="btn primary" onclick="sendWhatsApp()">Send Now</button>
+      <button class="btn primary" id="contactSendBtn" onclick="sendMessage()">Send Now</button>
     </div>
   </div>
 </div>
@@ -271,7 +277,39 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
   </div>
 </div>
 
+<!-- Full-screen viewer: no download link/href anywhere, bytes only ever live in JS memory -->
+<div class="viewerBack" id="viewerModal" oncontextmenu="return false">
+  <div class="viewerTop">
+    <div class="viewerTitle">
+      <b id="viewerName">Loading…</b>
+      <small id="viewerMeta"></small>
+    </div>
+    <div class="viewerPageInd" id="viewerPageInd"></div>
+    <button class="viewerClose" onclick="closeViewer()">×</button>
+  </div>
+  <div class="viewerBody" id="viewerBody">
+    <div class="viewerLoading" id="viewerLoading">Preparing secure preview…</div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
+
+<style>
+.viewerBack{display:none;position:fixed;inset:0;background:#05060d;z-index:200;flex-direction:column;user-select:none;-webkit-touch-callout:none}
+.viewerBack.show{display:flex}
+.viewerTop{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:12px 16px;background:#0c0e1a;border-bottom:1px solid #1c1f2e;color:#fff}
+.viewerTitle{flex:1;min-width:0}
+.viewerTitle b{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.viewerTitle small{color:#9aa0b4;font-size:10px}
+.viewerPageInd{font-size:11px;color:#9aa0b4;background:#171a2b;padding:6px 10px;border-radius:99px;white-space:nowrap}
+.viewerClose{width:36px;height:36px;border:0;border-radius:10px;background:#171a2b;color:#fff;font-size:20px;flex:0 0 auto}
+.viewerBody{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;scroll-behavior:smooth;display:flex;flex-direction:column;align-items:center;gap:14px;padding:18px 0 60px;touch-action:pan-y pinch-zoom}
+.viewerLoading{color:#9aa0b4;font-size:13px;margin-top:60px}
+.viewerPageWrap{max-width:100%}
+.viewerPageWrap canvas{display:block;max-width:92vw;box-shadow:0 10px 40px #0007;background:#fff;touch-action:none}
+.viewerImgWrap{width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none}
+.viewerImgWrap img{max-width:none;max-height:none;pointer-events:none;user-select:none;-webkit-user-drag:none}
+</style>
 
 <style>
 :root{
@@ -302,17 +340,37 @@ button,input,select{font:inherit}button{cursor:pointer}
 @media(max-width:760px){.sidebar{display:none}.main{margin:0;width:100%;padding:16px}.mobileTop{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.mobileBrand{display:flex;gap:9px;align-items:center}.mobileBrand .logo{width:34px;height:34px;border-radius:10px;font-size:12px}.iconBtn{background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 10px}.top{margin-bottom:18px}.topUpload{display:none}.top h1{font-size:24px}.welcome{padding:24px;min-height:220px}.welcome h2{font-size:24px}.welcomeArt{display:none}.subjects{grid-template-columns:1fr 1fr;gap:9px}.subject{min-height:165px;padding:14px}.subject h3{font-size:13px}.subject p{font-size:10px}.grid2{grid-template-columns:1fr}}
 @media(max-width:430px){.subjects{grid-template-columns:1fr 1fr}.subject{min-height:157px}.sectionHead{margin-top:22px}.welcome{border-radius:21px}}
 </style>
+
+<style>
+/* Level gate: blocked (secondary-level) content + class-level surfacing */
+.result.blocked{border-color:#f3c9c3;background:#fff7f6}
+.result.blocked .detectedHeader>span{background:#fdeceb;color:#c0392b}
+.blockedText{font-size:11px;color:#8a2f22;line-height:1.65}
+.blockedText b{display:block;color:#6d1f14;margin-bottom:4px;font-size:12px}
+.classBadge{display:inline-block;font-size:9px;font-weight:800;color:#4338ca;background:#eef0ff;border-radius:99px;padding:3px 8px;margin-left:8px;white-space:nowrap;vertical-align:middle}
+.classBadge.unknown{color:#9a5b00;background:#fff3d9}
+.content-name b{display:block}
+.content-name small{display:block;color:#9aa0af;font-weight:600;font-size:10px;margin-top:2px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:11px}
+.field select:disabled{background:#f5f6f9;color:#5b6272}
+@media(max-width:520px){.grid3{grid-template-columns:1fr 1fr}}
+</style>
 <script>
 const SUBJECTS=[
  {name:"English",icon:"🔤",desc:"Language, grammar & communication",keys:["english","grammar","vocabulary","comprehension","noun","verb","pronoun"]},
  {name:"Mathematics",icon:"➗",desc:"Numbers, operations & problem solving",keys:["mathematics","math","addition","subtraction","multiplication","division","fraction","geometry","number"]},
  {name:"Science",icon:"🔬",desc:"Living things, matter & environment",keys:["science","living things","plants","animals","matter","energy","health","environment"]},
  {name:"Social Study",icon:"🌍",desc:"People, community, history & geography",keys:["social studies","social study","community","geography","history","citizenship","map","culture"]},
- {name:"CRI",icon:"✝️",desc:"Christian Religious Education",keys:["cri","christian","religious","religion","bible","jesus","god","prayer","church"]},
+ {name:"CRE",icon:"✝️",desc:"Christian Religious Education",keys:["cre","cri","christian","religious","religion","bible","jesus","god","prayer","church"]},
  {name:"Literacy 1",icon:"🗣️",desc:"Foundational language literacy",keys:["literacy 1","literacy one","phonics","sounds","letters","speaking","listening"]},
  {name:"Literacy 2",icon:"📝",desc:"Reading, language & comprehension",keys:["literacy 2","literacy two","sentence","spelling","comprehension","language"]},
  {name:"Reading & Writing",icon:"📚",desc:"Reading fluency & written expression",keys:["reading","writing","story","paragraph","composition","fluency","read","write"]}
 ];
+
+/* Primary track only — Nursery through Primary Seven (PLE). Mirrors the
+   level gate in the scan-material / save-material Edge Functions, which
+   reject anything detected as Senior One–Six (UCE/UACE, secondary level). */
+const PRIMARY_LEVELS=["Nursery","Baby Class","Middle Class","Top Class","Primary One","Primary Two","Primary Three","Primary Four","Primary Five","Primary Six","Primary Seven"];
 
 /* Supabase backend. Only the publishable key ever ships to the browser —
    scanning, duplicate checks and the actual file writes happen inside
@@ -320,6 +378,49 @@ const SUBJECTS=[
 const SB_URL="https://vylcldfjzmqusdszhode.supabase.co";
 const SB_ANON_KEY="sb_publishable_ZuxOERYp4Big_BmpvJXOeA_4ylsZgJQ";
 const SB_FUNCTIONS_URL=SB_URL+"/functions/v1";
+
+/* ============================================================
+   Visitor analytics — reports to the "mother app" admin dashboard
+   (visits, time on platform, subjects browsed, PDF vs image opens).
+   No personal data collected: visitorId is a random id kept in
+   localStorage, purely to group a person's activity together.
+   ============================================================ */
+const PV_VISITOR_ID=(function(){
+  let id=localStorage.getItem("pv_visitor_id");
+  if(!id){id="v_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,10);localStorage.setItem("pv_visitor_id",id)}
+  return id;
+})();
+const PV_SESSION_ID="s_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8);
+
+function trackEvent(type,extra){
+  const payload=Object.assign({
+    visitorId:PV_VISITOR_ID,
+    sessionId:PV_SESSION_ID,
+    type,
+    userAgent:navigator.userAgent
+  },extra||{});
+  try{
+    const body=JSON.stringify(payload);
+    if(navigator.sendBeacon){
+      navigator.sendBeacon(SB_FUNCTIONS_URL+"/track-event",new Blob([body],{type:"application/json"}));
+    }else{
+      fetch(SB_FUNCTIONS_URL+"/track-event",{method:"POST",headers:{"Content-Type":"application/json"},body,keepalive:true}).catch(()=>{});
+    }
+  }catch(e){/* analytics must never break the app */}
+}
+
+let pvLastHeartbeat=Date.now();
+function pvHeartbeat(){
+  if(document.hidden)return;
+  const now=Date.now();
+  const seconds=Math.round((now-pvLastHeartbeat)/1000);
+  pvLastHeartbeat=now;
+  if(seconds>0) trackEvent("heartbeat",{seconds});
+}
+setInterval(pvHeartbeat,20000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)pvLastHeartbeat=Date.now()});
+window.addEventListener("beforeunload",pvHeartbeat);
+trackEvent("session_start");
 
 async function loadRecordsFromSupabase(){
   try{
@@ -333,6 +434,7 @@ async function loadRecordsFromSupabase(){
       name:r.file_name,
       subject:r.subject,
       year:r.academic_year||"",
+      classLevel:r.class_level||"",
       summary:r.summary||"",
       hash:r.hash,
       type:String(r.file_type||"").startsWith("image/")?"Image":"PDF",
@@ -436,6 +538,7 @@ function go(page){
   if(page==="dashboard")updateStats();
 }
 function openSubjectBrowser(subject){
+  trackEvent("subject_view",{subject});
   const list=visibleRecords().filter(r=>r.subject===subject);
   let modal=document.getElementById("subjectBrowser");
   if(!modal){modal=document.createElement("div");modal.id="subjectBrowser";modal.className="subject-browser";document.body.appendChild(modal)}
@@ -447,14 +550,14 @@ function openSubjectBrowser(subject){
   modal.innerHTML=`<div class="subject-browser-sheet">
     <div class="subject-browser-head"><button class="subject-back" onclick="closeSubjectBrowser()">‹</button><div><div class="subject-browser-kicker">${contentMode==="images"?"IMAGE CONTENT":"EXAM CONTENT"}</div><h2>${escapeHtml(subject)}</h2></div><button class="subject-close" onclick="closeSubjectBrowser()">×</button></div>
     <div class="subject-browser-note">${contentMode==="images"?"All images are shown. Their years are labels only and do not filter them.":(selectedYear?`Only ${selectedYear} exam content is shown.`:"All exam years are shown, newest first.")}</div>
-    <div class="year-list">${years.length?years.map(y=>`<section class="year-section"><div class="year-heading"><span>${escapeHtml(y)}</span><small>${groups[y].length} item${groups[y].length===1?"":"s"}</small></div><div class="year-content">${groups[y].map(r=>`<div class="content-row"><div class="content-file">${recordIsImage(r)?"IMG":"PDF"}</div><div class="content-name">${escapeHtml(r.name)}</div><span class="content-arrow">›</span></div>`).join("")}</div></section>`).join(""): `<div class="subject-empty"><div class="subject-empty-icon">📚</div><strong>No content yet</strong><span>Upload learning material to see it here.</span></div>`}</div>
+    <div class="year-list">${years.length?years.map(y=>`<section class="year-section"><div class="year-heading"><span>${escapeHtml(y)}</span><small>${groups[y].length} item${groups[y].length===1?"":"s"}</small></div><div class="year-content">${groups[y].map(r=>`<div class="content-row" onclick="openViewer('${r.id}')"><div class="content-file">${recordIsImage(r)?"IMG":"PDF"}</div><div class="content-name"><b>${escapeHtml(r.name)}</b>${r.classLevel?`<small>${escapeHtml(r.classLevel)}</small>`:""}</div><span class="content-arrow">›</span></div>`).join("")}</div></section>`).join(""): `<div class="subject-empty"><div class="subject-empty-icon">📚</div><strong>No content yet</strong><span>Upload learning material to see it here.</span></div>`}</div>
   </div>`;
   modal.classList.add("open");
 }
 function closeSubjectBrowser(){const m=document.getElementById("subjectBrowser");if(m)m.classList.remove("open")}
 function openUpload(){document.getElementById("uploadModal").classList.add("show");resetModal()}
 function closeUpload(){document.getElementById("uploadModal").classList.remove("show")}
-function resetModal(){pending=null;document.getElementById("fileInfo").style.display="none";document.getElementById("scan").classList.remove("show");document.getElementById("result").classList.remove("show");document.getElementById("saveBtn").disabled=true;document.getElementById("bar").style.width="0";document.getElementById("scanlog").textContent="";document.getElementById("scanPercent").textContent="0%"}
+function resetModal(){pending=null;document.getElementById("fileInfo").style.display="none";document.getElementById("scan").classList.remove("show");document.getElementById("result").classList.remove("show");document.getElementById("blockedResult").classList.remove("show");document.getElementById("saveBtn").style.display="";document.getElementById("saveBtn").disabled=true;document.getElementById("bar").style.width="0";document.getElementById("scanlog").textContent="";document.getElementById("scanPercent").textContent="0%"}
 function dropFile(e){e.preventDefault();document.getElementById("drop").classList.remove("drag");handleFile(e.dataTransfer.files[0])}
 
 /* ============================================================
@@ -655,6 +758,13 @@ async function handleFile(file){
     document.getElementById("saveBtn").disabled=true;
     return;
   }
+  if(scanResult.status==="blocked"){
+    const classLevel=scanResult.classLevel||"secondary-level";
+    setScan(100,"Blocked — detected as "+classLevel+" content.");
+    toast("File rejected: not primary-level content.");
+    showBlocked(scanResult.reason||"This looks like secondary-level content. PrimaryVault only accepts Nursery to Primary Seven (PLE) material.",classLevel);
+    return;
+  }
 
   setScan(85,"Detecting subject and academic year…");
   await sleep(150);
@@ -665,12 +775,23 @@ async function handleFile(file){
   fillResult(scanResult.detected,false,scanResult.status==="low_text"?scanResult.qualityNotes:"");
 }
 
+function showBlocked(reason,classLevel){
+  document.getElementById("blockedText").innerHTML=`<b>Detected class: ${escapeHtml(classLevel||"Secondary level")}</b>${escapeHtml(reason)}`;
+  document.getElementById("blockedResult").classList.add("show");
+  document.getElementById("saveBtn").style.display="none";
+  if(pending) pending.detected=null;
+}
+
 function fillResult(d,exists,qualityNote){
   const sel=document.getElementById("detSubject");
   sel.innerHTML=SUBJECTS.map(s=>`<option ${s.name===d.subject?"selected":""}>${s.name}</option>`).join("");
+  const clsSel=document.getElementById("detClassLevel");
+  clsSel.innerHTML=`<option value="">Not specified</option>`+PRIMARY_LEVELS.map(c=>`<option ${c===d.classLevel?"selected":""}>${c}</option>`).join("");
   document.getElementById("detYear").value=d.year||"";
   document.getElementById("detYearLabel").textContent=pending?.file?.type.startsWith("image/")?"YEAR LABEL (OPTIONAL)":"ACADEMIC YEAR";
   document.getElementById("detSummary").value=d.summary||"";
+  const headerSub=document.getElementById("detHeaderSub");
+  headerSub.textContent=d.classLevel?`Detected as ${d.classLevel} • Review before storing`:"Class level not confidently detected — please confirm below";
   const msg=document.getElementById("duplicateMessage");
   if(exists){
     duplicates++;
@@ -682,6 +803,8 @@ function fillResult(d,exists,qualityNote){
     msg.innerHTML=qualityNote?`${base}<br>⚠️ ${escapeHtml(qualityNote)}`:base;
     document.getElementById("saveBtn").disabled=false;
   }
+  document.getElementById("blockedResult").classList.remove("show");
+  document.getElementById("saveBtn").style.display="";
   document.getElementById("result").classList.add("show");
   pending.detected=d;
 }
@@ -730,6 +853,11 @@ async function saveDetected(){
     const res=await fetch(SB_FUNCTIONS_URL+"/save-material",{method:"POST",body:form});
     const data=await res.json();
 
+    if(data.status==="blocked"){
+      toast("Rejected at save — not primary-level content.");
+      showBlocked(data.error||"This looks like secondary-level content and was not saved.","");
+      return;
+    }
     if(!res.ok||data.status==="duplicate"){
       toast(data.message||data.error||"Could not save — this file may already exist.");
       saveBtn.disabled=false;
@@ -743,6 +871,7 @@ async function saveDetected(){
       name:r.file_name,
       subject:r.subject,
       year:r.academic_year||"",
+      classLevel:r.class_level||"",
       summary:r.summary||"",
       hash:r.hash,
       type:isImage?"Image":"PDF",
@@ -771,7 +900,7 @@ function openContact(){
 function closeContact(){
   document.getElementById("contactModal").classList.remove("show");
 }
-function sendWhatsApp(){
+async function sendMessage(){
   const name=document.getElementById("contactName").value.trim();
   const schoolId=document.getElementById("contactSchoolId").value.trim();
   const message=document.getElementById("contactMessage").value.trim();
@@ -781,18 +910,33 @@ function sendWhatsApp(){
     return;
   }
 
-  const text=[
-    "Hello PrimaryVault Support,",
-    "",
-    "Name: "+name,
-    "School ID: "+schoolId,
-    "",
-    "Message:",
-    message
-  ].join("\n");
+  const btn=document.getElementById("contactSendBtn");
+  const original=btn.textContent;
+  btn.disabled=true;
+  btn.textContent="Sending…";
 
-  const url="https://wa.me/256745685868?text="+encodeURIComponent(text);
-  window.location.href=url;
+  try{
+    const res=await fetch(SB_FUNCTIONS_URL+"/send-message",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name,schoolId,message,visitorId:PV_VISITOR_ID})
+    });
+    const data=await res.json();
+    if(!res.ok||data.status!=="sent"){
+      toast(data.error||"Could not send your message. Please try again.");
+      return;
+    }
+    toast("Message sent — the PrimaryVault team will get back to you.");
+    document.getElementById("contactName").value="";
+    document.getElementById("contactSchoolId").value="";
+    document.getElementById("contactMessage").value="";
+    closeContact();
+  }catch(e){
+    toast("Couldn't reach the server — check your connection and try again.");
+  }finally{
+    btn.disabled=false;
+    btn.textContent=original;
+  }
 }
 
 /* Theme system */
@@ -833,6 +977,167 @@ function initTheme(){
 }
 function toast(msg){const t=document.getElementById("toast");t.textContent=msg;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),2800)}
 function toggleSide(force){const side=document.querySelector('.sidebar'),overlay=document.getElementById('navOverlay');if(!side)return;const open=force===undefined?!side.classList.contains('open'):!!force;side.classList.toggle('open',open);overlay.classList.toggle('open',open)}
+
+/* ============================================================
+   In-app viewer. There is no download button/link/href anywhere
+   in this app: content is fetched as raw bytes via a short-lived,
+   single-purpose token and rendered straight into <canvas>/<img>.
+   Hitting the streaming endpoint without a valid, fresh, matching
+   token returns a deliberately corrupted decoy file instead of an
+   error, so a stray/guessed request doesn't yield a usable file.
+   (Note: this deters casual copying — right-click, "Save As", a
+   guessed link — but no browser-based viewer can make content
+   100% uncopiable from someone deliberately using devtools.)
+   ============================================================ */
+let viewerState=null;
+
+function attachPinchZoomPan(container,contentEl){
+  let scale=1,minScale=1,maxScale=5,originX=0,originY=0,panX=0,panY=0;
+  let pointers=new Map(),startDist=0,startScale=1,lastTap=0;
+  function apply(){contentEl.style.transform=`translate(${panX}px,${panY}px) scale(${scale})`}
+  function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+  function midpoint(a,b){return{x:(a.x+b.x)/2,y:(a.y+b.y)/2}}
+  container.addEventListener("pointerdown",e=>{
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(pointers.size===2){
+      const [a,b]=[...pointers.values()];
+      startDist=dist(a,b);startScale=scale;
+    }
+  });
+  container.addEventListener("pointermove",e=>{
+    if(!pointers.has(e.pointerId))return;
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(pointers.size===2){
+      e.preventDefault();
+      const [a,b]=[...pointers.values()];
+      const d=dist(a,b);
+      if(startDist>0){
+        scale=Math.min(maxScale,Math.max(minScale,startScale*(d/startDist)));
+        apply();
+      }
+    }else if(pointers.size===1&&scale>1){
+      const p=[...pointers.values()][0];
+      if(e.buttons||e.pointerType==="touch"){
+        panX+=e.movementX||0;panY+=e.movementY||0;
+        apply();
+      }
+    }
+  });
+  function release(e){
+    pointers.delete(e.pointerId);
+    if(pointers.size<2)startDist=0;
+  }
+  container.addEventListener("pointerup",release);
+  container.addEventListener("pointercancel",release);
+  container.addEventListener("pointerleave",release);
+  container.addEventListener("dblclick",e=>{
+    scale=scale>1?1:2.2;panX=0;panY=0;apply();
+  });
+  container.addEventListener("wheel",e=>{
+    if(!e.ctrlKey)return;
+    e.preventDefault();
+    scale=Math.min(maxScale,Math.max(minScale,scale-e.deltaY*0.01));
+    apply();
+  },{passive:false});
+}
+
+async function fetchMaterialBytes(record){
+  const tokRes=await fetch(SB_FUNCTIONS_URL+"/request-view-token",{
+    method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({materialId:record.id})
+  });
+  const tok=await tokRes.json();
+  if(!tokRes.ok||!tok.token) throw new Error(tok.error||"Could not open a viewing session.");
+  const kind=recordIsImage(record)?"image":"pdf";
+  const streamUrl=SB_FUNCTIONS_URL+"/stream-material?id="+encodeURIComponent(record.id)+"&token="+encodeURIComponent(tok.token)+"&kind="+kind;
+  const fileRes=await fetch(streamUrl);
+  const buf=await fileRes.arrayBuffer();
+  const looksValid=fileRes.headers.get("Content-Disposition")==="inline";
+  if(!looksValid) throw new Error("Preview session expired — please reopen this item.");
+  return buf;
+}
+
+async function openViewer(id){
+  const record=records.find(r=>r.id===id);
+  if(!record){toast("Item not found.");return;}
+  trackEvent("content_open",{subject:record.subject,contentType:recordIsImage(record)?"image":"pdf",recordId:record.id});
+  viewerState={record};
+  const modal=document.getElementById("viewerModal");
+  const body=document.getElementById("viewerBody");
+  const loading=document.getElementById("viewerLoading");
+  document.getElementById("viewerName").textContent=record.name;
+  document.getElementById("viewerMeta").textContent=[record.subject,record.year].filter(Boolean).join(" • ");
+  document.getElementById("viewerPageInd").textContent="";
+  body.innerHTML="";
+  body.appendChild(loading);
+  loading.textContent="Preparing secure preview…";
+  modal.classList.add("show");
+  document.body.style.overflow="hidden";
+
+  try{
+    const buf=await fetchMaterialBytes(record);
+    if(recordIsImage(record)) await renderImageViewer(buf,body);
+    else await renderPdfViewer(buf,body);
+    loading.remove();
+  }catch(e){
+    loading.textContent="Couldn't open this file — "+(e.message||"please try again.");
+  }
+}
+
+function closeViewer(){
+  document.getElementById("viewerModal").classList.remove("show");
+  document.getElementById("viewerBody").innerHTML="";
+  document.body.style.overflow="";
+  viewerState=null;
+}
+
+async function renderImageViewer(buf,body){
+  const blob=new Blob([buf]);
+  const objUrl=URL.createObjectURL(blob);
+  const wrap=document.createElement("div");
+  wrap.className="viewerImgWrap";
+  wrap.style.cssText="flex:1;width:100%";
+  const img=document.createElement("img");
+  img.src=objUrl;
+  img.draggable=false;
+  img.oncontextmenu=()=>false;
+  img.onload=()=>URL.revokeObjectURL(objUrl);
+  wrap.appendChild(img);
+  body.appendChild(wrap);
+  body.style.padding="0";
+  attachPinchZoomPan(wrap,img);
+}
+
+async function renderPdfViewer(buf,body){
+  if(!await ensurePdfEngine()) throw new Error("PDF engine unavailable.");
+  const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
+  const pageInd=document.getElementById("viewerPageInd");
+  pageInd.textContent="Page 1 of "+pdf.numPages;
+  const wraps=[];
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p);
+    const viewport=page.getViewport({scale:Math.min(2.2,(window.innerWidth||900)/page.getViewport({scale:1}).width*1.4)});
+    const canvas=document.createElement("canvas");
+    canvas.width=viewport.width;canvas.height=viewport.height;
+    canvas.oncontextmenu=()=>false;
+    const ctx=canvas.getContext("2d");
+    await page.render({canvasContext:ctx,viewport}).promise;
+    const wrap=document.createElement("div");
+    wrap.className="viewerPageWrap";
+    wrap.dataset.page=p;
+    wrap.appendChild(canvas);
+    attachPinchZoomPan(wrap,canvas);
+    body.appendChild(wrap);
+    wraps.push(wrap);
+  }
+  const io=new IntersectionObserver(entries=>{
+    entries.forEach(en=>{
+      if(en.isIntersecting){
+        pageInd.textContent="Page "+en.target.dataset.page+" of "+pdf.numPages;
+      }
+    });
+  },{root:body,threshold:0.55});
+  wraps.forEach(w=>io.observe(w));
+}
 
 document.querySelectorAll(".nav button[data-page]").forEach(b=>b.onclick=()=>{go(b.dataset.page);toggleSide(false)});
 updateStats();
