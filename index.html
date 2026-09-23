@@ -3,7 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>PrimaryVault</title>
+<title>Excel Examination Services</title>
+<meta name="description" content="Excel Examination Services">
+<meta name="theme-color" content="#0d1f4e">
+<script>
+/* Install gate: runs before first paint. Adds pg-on only when NOT already running as an installed app. */
+(function(){try{var d=document.documentElement,m=window.matchMedia,c=false,
+s=!!(m&&(m("(display-mode: standalone)").matches||m("(display-mode: fullscreen)").matches||m("(display-mode: minimal-ui)").matches))||navigator.standalone===true;
+try{c=!!sessionStorage.getItem("pgContinue")}catch(e){}
+if(!s&&!c)d.classList.add("pg-on")}catch(e){}})();
+</script>
+<style>
+/* Install gate (shown only while html.pg-on is set) */
+#pgGate{display:none}
+html.pg-on{overflow:hidden}
+html.pg-on body>:not(#pgGate){visibility:hidden}
+html.pg-on #pgGate{display:flex;visibility:visible;position:fixed;inset:0;z-index:2147483000;flex-direction:column;align-items:center;justify-content:center;
+  padding:32px 24px calc(32px + env(safe-area-inset-bottom));background:#F0F1F6;color:#1A1D27;text-align:center;overflow:auto;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+#pgGate .pg-logo{width:112px;height:112px;border-radius:26px;object-fit:cover;display:block;box-shadow:0 10px 30px rgba(20,23,35,.28)}
+#pgGate .pg-name{margin:22px 0 32px;font-size:1.75rem;font-weight:800;line-height:1.2;letter-spacing:-.02em;color:inherit}
+#pgGate .pg-install{display:inline-flex;align-items:center;justify-content:center;gap:10px;width:min(100%,320px);min-height:52px;padding:0 24px;border:0;border-radius:14px;
+  background:#0d1f4e;color:#fff;font-family:inherit;font-size:1rem;font-weight:700;line-height:1;cursor:pointer;box-shadow:0 8px 22px rgba(13,31,78,.35)}
+#pgGate .pg-install:disabled{opacity:.7;cursor:default}
+#pgGate .pg-msg{margin:16px 0 0;max-width:320px;font-size:.9rem;line-height:1.5;color:#666C7D}
+#pgGate .pg-msg[hidden]{display:none}
+#pgGate .pg-continue{margin-top:14px;padding:12px 16px;border:0;background:none;font-family:inherit;font-size:.92rem;font-weight:600;line-height:1.2;color:#d9a521;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+#pgGate button:focus-visible{outline:2px solid #d9a521;outline-offset:3px}
+</style>
+<link rel="manifest" href="manifest.json">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Excel">
 <style>
 :root{
  --bg:#f7f8fc;--card:#fff;--ink:#151827;--muted:#7b8191;--line:#e8eaf0;
@@ -16,7 +48,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 .app{min-height:100vh;display:flex}
 .sidebar{position:fixed;left:0;top:0;bottom:0;width:246px;background:var(--nav);color:#fff;padding:22px 15px;z-index:30}
 .brand{display:flex;align-items:center;gap:11px;padding:4px 10px 32px}.brand b{font-size:17px}.brand small{display:block;color:#8e96aa;font-size:11px;margin-top:2px}
-.logo{width:41px;height:41px;border-radius:13px;background:linear-gradient(135deg,#7567f2,#24c99a);display:grid;place-items:center;font-weight:900;box-shadow:0 9px 25px #0004}
+.logo{width:41px;height:41px;border-radius:13px;background:#fff;border:1px solid var(--line);display:grid;place-items:center;overflow:hidden;box-shadow:0 9px 25px #0002}.logo img{width:100%;height:100%;object-fit:contain;padding:3px;box-sizing:border-box}
 .nav{display:grid;gap:6px}.nav button{border:0;background:transparent;color:#9ca5ba;text-align:left;padding:12px 13px;border-radius:13px;display:flex;gap:12px;align-items:center}.nav button span{width:22px;text-align:center;font-size:17px}.nav button.active,.nav button:hover{background:#fff10;color:#fff}
 .sideUpload{width:100%;margin-top:22px;padding:13px;border-radius:13px;border:1px solid #ffffff18;background:linear-gradient(135deg,#7567f2,#6657dc);color:#fff;font-weight:750;box-shadow:0 10px 25px #5f51d530}
 .sidefoot{position:absolute;left:15px;right:15px;bottom:18px;padding:13px;border-radius:15px;background:#ffffff09;border:1px solid #ffffff0e;color:#8790a5;font-size:10px;line-height:1.6}
@@ -125,11 +157,149 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
 
 </head>
 <body>
+<div id="pgGate" role="dialog" aria-modal="true" aria-labelledby="pgName">
+  <img id="pgLogo" class="pg-logo" src="icon-512.png" alt="" width="112" height="112">
+  <h1 id="pgName" class="pg-name">Excel</h1>
+  <button type="button" id="pgInstall" class="pg-install">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    <span id="pgInstallLabel">Install</span>
+  </button>
+  <p id="pgMsg" class="pg-msg" role="status" aria-live="polite" hidden></p>
+  <button type="button" id="pgContinue" class="pg-continue">Continue in browser</button>
+</div>
+<script>
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  var deferred = null;      // the stored beforeinstallprompt event
+  var waiter = null;        // resolves the "wait for the event" delay
+  var busy = false, installedNow = false;
+  var ua = navigator.userAgent || "";
+  var isIOS = /iphone|ipad|ipod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  function $(id) { return document.getElementById(id); }
+
+  function standalone() {
+    try {
+      var m = window.matchMedia;
+      return !!(m && (m("(display-mode: standalone)").matches || m("(display-mode: fullscreen)").matches || m("(display-mode: minimal-ui)").matches)) || navigator.standalone === true;
+    } catch (e) { return false; }
+  }
+  function gateOn() { return root.classList.contains("pg-on"); }
+
+  // Messages: inline in the gate while it is showing, otherwise a toast (floating button).
+  function pwaToast(msg) {
+    var t = $("pwaToast");
+    if (!t) {
+      t = document.createElement("div");
+      t.id = "pwaToast";
+      t.style.cssText = "position:fixed;left:50%;bottom:84px;transform:translateX(-50%);max-width:88vw;background:#161A26;color:#fff;padding:12px 16px;border-radius:12px;font:600 13.5px/1.4 system-ui,sans-serif;z-index:1000;box-shadow:0 8px 24px rgba(0,0,0,.3);text-align:center;";
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.display = "block";
+    clearTimeout(t._h);
+    t._h = setTimeout(function () { t.style.display = "none"; }, 8000);
+  }
+  function say(msg) {
+    if (gateOn()) { var m = $("pgMsg"); m.textContent = msg; m.hidden = false; }
+    else pwaToast(msg);
+  }
+
+  // Floating install button: visible only outside the gate, when an install is possible.
+  function syncFloat() {
+    var b = $("pwaInstallBtn");
+    if (!b) return;
+    var can = !!deferred || isIOS;
+    b.style.display = (can && !installedNow && !standalone() && !gateOn()) ? "flex" : "none";
+  }
+  function setBusy(on) {
+    var b = $("pgInstall"), l = $("pgInstallLabel");
+    if (b) b.disabled = on;
+    if (l) l.textContent = on ? "Getting ready\u2026" : "Install";
+  }
+
+  function runPrompt() {
+    var p = deferred;
+    deferred = null;                       // a prompt can only be used once
+    var done;
+    try {
+      p.prompt();
+      done = Promise.resolve(p.userChoice).then(function (c) {
+        if (c && c.outcome === "accepted") say("Installing\u2026 the app will appear on your home screen or app list in a few seconds.");
+        else say("Install cancelled. To try again, open the browser menu and tap \u201cInstall app\u201d.");
+      });
+    } catch (err) {
+      done = Promise.reject(err);
+    }
+    return done.catch(function () {
+      say("Couldn\u2019t start the install. Open the browser menu and tap \u201cInstall app\u201d or \u201cAdd to Home screen\u201d.");
+    }).then(syncFloat);
+  }
+
+  function waitForPrompt(ms) {
+    return new Promise(function (resolve) {
+      var t = setTimeout(function () { waiter = null; resolve(); }, ms);
+      waiter = function () { clearTimeout(t); waiter = null; resolve(); };
+    });
+  }
+
+  function install() {
+    if (standalone()) return;
+    if (deferred) { runPrompt(); return; }
+    if (isIOS) { say("To install: tap the Share icon, then \u201cAdd to Home Screen\u201d."); return; }
+    if (busy) return;
+    busy = true; setBusy(true);
+    // The browser may not have fired beforeinstallprompt yet: wait up to 3.5 s before falling back.
+    waitForPrompt(3500).then(function () {
+      busy = false; setBusy(false);
+      if (deferred) runPrompt();
+      else say("Open the browser menu (\u22ee) and tap \u201cInstall app\u201d or \u201cAdd to Home screen\u201d.");
+    });
+  }
+
+  window.addEventListener("beforeinstallprompt", function (e) {
+    e.preventDefault();
+    deferred = e;
+    if (waiter) waiter();
+    syncFloat();
+  });
+  window.addEventListener("appinstalled", function () {
+    installedNow = true;
+    deferred = null;
+    var b = $("pgInstall"); if (b) b.style.display = "none";
+    syncFloat();
+    say("Installed! Open Excel Examination Services from your home screen or app list.");
+  });
+
+  $("pgInstall").addEventListener("click", install);
+  $("pgContinue").addEventListener("click", function () {
+    try { sessionStorage.setItem("pgContinue", "1"); } catch (e) {}
+    root.classList.remove("pg-on");
+    var m = $("pgMsg"); if (m) m.hidden = true;
+    syncFloat();
+  });
+  // The floating button lives further down the page; a delegated listener needs no ordering.
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest("#pwaInstallBtn")) install();
+  });
+  document.addEventListener("DOMContentLoaded", syncFloat);
+
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("sw.js", { scope: "./", updateViaCache: "none" }).catch(function () {});
+    });
+  }
+})();
+</script>
+<button id="pwaInstallBtn" title="Install App" style="display:none;position:fixed;right:18px;bottom:18px;z-index:999;width:52px;height:52px;border-radius:50%;background:#0d1f4e;color:#fff;border:none;box-shadow:0 6px 18px rgba(13,31,78,.35);align-items:center;justify-content:center;cursor:pointer;">
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+</button>
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="logo">PV</div>
-      <div><b>PrimaryVault</b><small>Learning Content</small></div>
+      <div class="logo"><img src="icon-192.png" alt="Excel Examination Services" width="41" height="41"></div>
+      <div><b>Excel</b><small>Examination Services</small></div>
     </div>
 
     <nav class="nav">
@@ -150,13 +320,13 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
 
   <main class="main">
     <div class="mobileTop">
-      <div class="mobileBrand"><div class="logo">PV</div><b>PrimaryVault</b></div>
+      <div class="mobileBrand"><div class="logo"><img src="icon-192.png" alt="Excel Examination Services" width="34" height="34"></div><b>Excel</b></div>
       <button class="iconBtn" onclick="toggleSide()">☰</button>
     </div>
 
     <header class="top">
       <div>
-        <div class="crumb">PrimaryVault / <span id="crumb">Home</span></div>
+        <div class="crumb">Excel / <span id="crumb">Home</span></div>
         <h1 id="title">Primary Subjects</h1>
       </div>
       
@@ -167,7 +337,7 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
         <div>
           <span class="eyebrow">PRIMARY LEARNING CONTENT</span>
           <h2>Everything students need,<br><em>organized beautifully.</em></h2>
-          <p>Browse learning materials by subject. Upload once and let PrimaryVault organize content by subject and academic year.</p>
+          <p>Browse learning materials by subject. Upload once and let Excel Examination Services organize content by subject and academic year.</p>
         </div>
         <div class="welcomeArt"><div>📚</div><span>8 subjects</span></div>
       </div>
@@ -225,7 +395,7 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
       </div>
 
       <div class="result blocked" id="blockedResult">
-        <div class="detectedHeader"><span>✕</span><div><b>Not accepted</b><small>PrimaryVault is primary-level only</small></div></div>
+        <div class="detectedHeader"><span>✕</span><div><b>Not accepted</b><small>Excel Examination Services is primary-level only</small></div></div>
         <div class="blockedText" id="blockedText"></div>
       </div>
     </div>
@@ -248,7 +418,7 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
     <div class="modalBody">
       <div class="contactIntro">
         <div class="contactIcon">☏</div>
-        <div><b>Message PrimaryVault Support</b><p>Fill in your name, school ID and message. It goes straight to the PrimaryVault team — no WhatsApp needed.</p></div>
+        <div><b>Message Excel Examination Services Support</b><p>Fill in your name, school ID and message. It goes straight to the Excel Examination Services team — no WhatsApp needed.</p></div>
       </div>
       <div class="contactFields">
         <div class="field full"><label>YOUR NAME *</label><input id="contactName" required placeholder="Enter your name"></div>
@@ -295,7 +465,7 @@ body[data-theme="slate"]{--bg:#f1f4f7;--purple:#465a70;--purple2:#667b91;--green
 <div class="toast" id="toast"></div>
 
 <style>
-.viewerBack{display:none;position:fixed;inset:0;background:#05060d;z-index:200;flex-direction:column;user-select:none;-webkit-touch-callout:none}
+.viewerBack{display:none;position:fixed;inset:0;background:#05060d;z-index:1700;flex-direction:column;user-select:none;-webkit-touch-callout:none}
 .viewerBack.show{display:flex}
 .viewerTop{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:12px 16px;background:#0c0e1a;border-bottom:1px solid #1c1f2e;color:#fff}
 .viewerTitle{flex:1;min-width:0}
@@ -323,7 +493,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 .app{min-height:100vh;display:flex}
 .sidebar{position:fixed;left:0;top:0;bottom:0;width:246px;background:var(--nav);color:#fff;padding:22px 15px;z-index:30}
 .brand{display:flex;align-items:center;gap:11px;padding:4px 10px 32px}.brand b{font-size:17px}.brand small{display:block;color:#8e96aa;font-size:11px;margin-top:2px}
-.logo{width:41px;height:41px;border-radius:13px;background:linear-gradient(135deg,#7567f2,#24c99a);display:grid;place-items:center;font-weight:900;box-shadow:0 9px 25px #0004}
+.logo{width:41px;height:41px;border-radius:13px;background:#fff;border:1px solid var(--line);display:grid;place-items:center;overflow:hidden;box-shadow:0 9px 25px #0002}.logo img{width:100%;height:100%;object-fit:contain;padding:3px;box-sizing:border-box}
 .nav{display:grid;gap:6px}.nav button{border:0;background:transparent;color:#9ca5ba;text-align:left;padding:12px 13px;border-radius:13px;display:flex;gap:12px;align-items:center}.nav button span{width:22px;text-align:center;font-size:17px}.nav button.active,.nav button:hover{background:#fff10;color:#fff}
 .sideUpload{width:100%;margin-top:22px;padding:13px;border-radius:13px;border:1px solid #ffffff18;background:linear-gradient(135deg,#7567f2,#6657dc);color:#fff;font-weight:750;box-shadow:0 10px 25px #5f51d530}
 .sidefoot{position:absolute;left:15px;right:15px;bottom:18px;padding:13px;border-radius:15px;background:#ffffff09;border:1px solid #ffffff0e;color:#8790a5;font-size:10px;line-height:1.6}
@@ -445,7 +615,7 @@ async function loadRecordsFromSupabase(){
     }));
     saveState();
   }catch(e){
-    toast("Couldn't refresh from the PrimaryVault server — showing the last saved copy.");
+    toast("Couldn't refresh from the Excel Examination Services server — showing the last saved copy.");
   }
   updateStats();
 }
@@ -495,11 +665,10 @@ function updateHomeHeading(){
 function populateYears(){
   const sel=document.getElementById("yearSelect");
   if(!sel)return;
-  const years=records.filter(r=>!recordIsImage(r)).map(r=>parseInt(r.year,10)).filter(y=>Number.isFinite(y)&&y>=2015);
-  const maxYear=years.length?Math.max(...years):2015;
-  const top=Math.max(maxYear,2015);
+  // Only list years actually present in uploaded content — no filled-in range of empty years.
+  const years=[...new Set(records.filter(r=>!recordIsImage(r)).map(r=>parseInt(r.year,10)).filter(y=>Number.isFinite(y)))].sort((a,b)=>b-a);
   let opts=`<option value="">All years</option>`;
-  for(let y=top;y>=2015;y--) opts+=`<option value="${y}" ${String(selectedYear)===String(y)?"selected":""}>${y}</option>`;
+  opts+=years.map(y=>`<option value="${y}" ${String(selectedYear)===String(y)?"selected":""}>${y}</option>`).join("");
   sel.innerHTML=opts;
 }
 function toggleYearMenu(){
@@ -538,6 +707,7 @@ function go(page){
   if(page==="dashboard")updateStats();
 }
 function openSubjectBrowser(subject){
+  closeViewer();
   trackEvent("subject_view",{subject});
   const list=visibleRecords().filter(r=>r.subject===subject);
   let modal=document.getElementById("subjectBrowser");
@@ -561,7 +731,7 @@ function resetModal(){pending=null;document.getElementById("fileInfo").style.dis
 function dropFile(e){e.preventDefault();document.getElementById("drop").classList.remove("drag");handleFile(e.dataTransfer.files[0])}
 
 /* ============================================================
-   PrimaryVault upload engine
+   Excel Examination Services upload engine
    - Local fingerprinting + duplicate protection
    - PDF text extraction
    - Image OCR hook
@@ -722,7 +892,7 @@ async function handleFile(file){
   }
   pending.scanText=clientText;
 
-  setScan(55,"Sending fingerprint to PrimaryVault server for verification…");
+  setScan(55,"Sending fingerprint to Excel Examination Services server for verification…");
   let scanResult;
   try{
     const form=new FormData();
@@ -731,7 +901,7 @@ async function handleFile(file){
     const res=await fetch(SB_FUNCTIONS_URL+"/scan-material",{method:"POST",body:form});
     scanResult=await res.json();
   }catch(e){
-    setScan(60,"Could not reach the PrimaryVault server. Check your connection and try again.");
+    setScan(60,"Could not reach the Excel Examination Services server. Check your connection and try again.");
     toast("Scan failed — server unreachable.");
     return;
   }
@@ -747,7 +917,7 @@ async function handleFile(file){
 
   if(scanResult.status==="duplicate"){
     pending.exists=true;
-    setScan(100,"Duplicate fingerprint matched a file already in PrimaryVault.");
+    setScan(100,"Duplicate fingerprint matched a file already in Excel Examination Services.");
     const ex=scanResult.existing||{};
     fillResult({subject:ex.subject||SUBJECTS[0].name,year:ex.academic_year||"",summary:ex.summary||"Existing material.",confidence:"Duplicate"},true);
     return;
@@ -762,7 +932,7 @@ async function handleFile(file){
     const classLevel=scanResult.classLevel||"secondary-level";
     setScan(100,"Blocked — detected as "+classLevel+" content.");
     toast("File rejected: not primary-level content.");
-    showBlocked(scanResult.reason||"This looks like secondary-level content. PrimaryVault only accepts Nursery to Primary Seven (PLE) material.",classLevel);
+    showBlocked(scanResult.reason||"This looks like secondary-level content. Excel Examination Services only accepts Nursery to Primary Seven (PLE) material.",classLevel);
     return;
   }
 
@@ -926,7 +1096,7 @@ async function sendMessage(){
       toast(data.error||"Could not send your message. Please try again.");
       return;
     }
-    toast("Message sent — the PrimaryVault team will get back to you.");
+    toast("Message sent — the Excel Examination Services team will get back to you.");
     document.getElementById("contactName").value="";
     document.getElementById("contactSchoolId").value="";
     document.getElementById("contactMessage").value="";
@@ -941,7 +1111,7 @@ async function sendMessage(){
 
 /* Theme system */
 const PV_THEMES=[
-  {id:"default",name:"Primary",desc:"The original PrimaryVault look",colors:["#11172d","#6c5ce7","#1bb88a"]},
+  {id:"default",name:"Primary",desc:"The original Excel Examination Services look",colors:["#11172d","#6c5ce7","#1bb88a"]},
   {id:"midnight",name:"Midnight",desc:"Deep dark interface",colors:["#080b18","#8b7cf5","#24c99a"]},
   {id:"forest",name:"Forest",desc:"Fresh green learning space",colors:["#12372b","#168b69","#32aa86"]},
   {id:"ocean",name:"Ocean",desc:"Cool blue interface",colors:["#12324a","#2879c7","#54a0e8"]},
@@ -1059,6 +1229,7 @@ async function fetchMaterialBytes(record){
 async function openViewer(id){
   const record=records.find(r=>r.id===id);
   if(!record){toast("Item not found.");return;}
+  closeSubjectBrowser();
   trackEvent("content_open",{subject:record.subject,contentType:recordIsImage(record)?"image":"pdf",recordId:record.id});
   viewerState={record};
   const modal=document.getElementById("viewerModal");
